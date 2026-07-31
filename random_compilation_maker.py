@@ -1305,7 +1305,7 @@ class App(tk.Tk):
                         command=self._sync_mode).grid(row=0, column=2,
                                                       sticky="w", **pad)
         self.duration_spin = ttk.Spinbox(params, from_=1, to=1000000, width=8)
-        self.duration_spin.set(120)
+        self.duration_spin.set(90)
         self.duration_spin.grid(row=0, column=3, sticky="w", **pad)
 
         ttk.Label(params, text="Min clip length (s):").grid(
