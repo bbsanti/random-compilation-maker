@@ -75,6 +75,19 @@
       var A = W.RCMApp;
       check(true, 'index.html loaded and wired up');
 
+      // -- the defaults a fresh page opens with ------------------------------
+      check(D.getElementById('modeDuration').checked, 'defaults to cutting by total duration');
+      check(D.getElementById('totalDuration').value === '120', 'default total duration is 120s',
+        D.getElementById('totalDuration').value);
+      check(D.getElementById('minLen').value === '2', 'default min clip length is 2s',
+        D.getElementById('minLen').value);
+      check(D.getElementById('maxLen').value === '6', 'default max clip length is 6s',
+        D.getElementById('maxLen').value);
+      check(D.getElementById('clipCount').disabled === true,
+        'the clip-count box starts disabled in duration mode');
+      check(D.getElementById('totalDuration').disabled === false,
+        'the total-duration box starts enabled');
+
       // -- the output extension must follow the sources straight away --------
       // Regression: a save location picked while the field still said .mp4
       // produced a QuickTime file on disk named .mp4, because a picked file
@@ -128,6 +141,13 @@
           };
         }
       };
+
+      // This test renders a fixed number of clips, so switch off the
+      // total-duration default the page now opens with.
+      D.getElementById('modeCount').checked = true;
+      D.getElementById('modeCount').dispatchEvent(new W.Event('change'));
+      check(D.getElementById('clipCount').disabled === false,
+        'choosing clip-count mode re-enables its box');
 
       D.getElementById('clipCount').value = '6';
       D.getElementById('minLen').value = '0.8';

@@ -1291,7 +1291,7 @@ class App(tk.Tk):
         for c in range(4):
             params.columnconfigure(c, weight=1)
 
-        self.mode_var = tk.StringVar(value="count")
+        self.mode_var = tk.StringVar(value="duration")
         ttk.Radiobutton(params, text="By number of clips", value="count",
                         variable=self.mode_var,
                         command=self._sync_mode).grid(row=0, column=0,
@@ -1305,21 +1305,21 @@ class App(tk.Tk):
                         command=self._sync_mode).grid(row=0, column=2,
                                                       sticky="w", **pad)
         self.duration_spin = ttk.Spinbox(params, from_=1, to=1000000, width=8)
-        self.duration_spin.set(60)
+        self.duration_spin.set(120)
         self.duration_spin.grid(row=0, column=3, sticky="w", **pad)
 
         ttk.Label(params, text="Min clip length (s):").grid(
             row=1, column=0, sticky="w", **pad)
         self.min_len_spin = ttk.Spinbox(params, from_=0.1, to=3600,
                                          increment=0.5, width=8)
-        self.min_len_spin.set(1.0)
+        self.min_len_spin.set(2.0)
         self.min_len_spin.grid(row=1, column=1, sticky="w", **pad)
 
         ttk.Label(params, text="Max clip length (s):").grid(
             row=1, column=2, sticky="w", **pad)
         self.max_len_spin = ttk.Spinbox(params, from_=0.1, to=3600,
                                          increment=0.5, width=8)
-        self.max_len_spin.set(3.0)
+        self.max_len_spin.set(6.0)
         self.max_len_spin.grid(row=1, column=3, sticky="w", **pad)
 
         self.shuffle_var = tk.BooleanVar(value=True)
