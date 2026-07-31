@@ -217,6 +217,23 @@
   // --------------------------------------------------------------- splitting
   eq(C.splitTopLevel('a (b, c), d [e, f], g', ','), ['a (b, c)', 'd [e, f]', 'g'], 'splitTopLevel');
 
+  // ------------------------------------------------- predicting the container
+  // A save location picked before the render cannot be renamed afterwards, so
+  // the extension has to be right from the source names alone.
+  eq(C.guessOutputContainer(['a.mov', 'b.mov', 'c.mp4']), '.mov', 'guessOutputContainer picks the commonest');
+  eq(C.guessOutputContainer(['reel.MOV']), '.mov', 'guessOutputContainer lowercases');
+  eq(C.guessOutputContainer(['sub/dir/clip.mxf', 'sub/dir/clip2.mxf']), '.mxf',
+    'guessOutputContainer handles paths');
+  eq(C.guessOutputContainer(['a.mp4', 'b.mov']), '.mov', 'guessOutputContainer breaks ties predictably');
+  eq(C.guessOutputContainer(['notes.txt', 'sheet.csv']), null, 'guessOutputContainer ignores non-video');
+  eq(C.guessOutputContainer([]), null, 'guessOutputContainer copes with nothing');
+  eq(C.guessOutputContainer(undefined), null, 'guessOutputContainer copes with undefined');
+
+  eq(C.withExtension('random_compilation.mp4', '.mov'), 'random_compilation.mov', 'withExtension swaps');
+  eq(C.withExtension('my.reel.v2.mp4', '.mov'), 'my.reel.v2.mov', 'withExtension keeps inner dots');
+  eq(C.withExtension('noextension', '.mov'), 'noextension.mov', 'withExtension appends');
+  eq(C.withExtension('', '.mov'), 'random_compilation.mov', 'withExtension has a default stem');
+
   // ------------------------------------------------------------ clip planning
   var planSources = [
     { path: '/in/a.mp4', duration: 60, vf: null },

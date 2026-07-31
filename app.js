@@ -301,6 +301,48 @@
     }).join('');
     $('#dropHint').hidden = S.items.length > 0;
     $('#countLabel').textContent = S.items.length + ' video' + (S.items.length === 1 ? '' : 's');
+    syncOutputExtension();
+  }
+
+  /**
+   * Keep the output name's extension in step with the sources.
+   *
+   * The container is only settled once the sources have been probed, but a
+   * save location picked before then cannot be renamed afterwards -- so the
+   * extension has to be right up front, or a QuickTime file ends up called
+   * .mp4. The source extensions predict it, so use them the moment files
+   * arrive.
+   */
+  function syncOutputExtension() {
+    var field = $('#outputName');
+    if (!field) return;
+    var ext = C.guessOutputContainer(S.items.map(function (it) { return it.label; }));
+    if (!ext) return;
+    var current = field.value.trim();
+    if (C.extOf(current) !== ext) field.value = C.withExtension(current, ext);
+    checkSaveTarget(ext);
+  }
+
+  /** Warn if an already-chosen save file has the wrong extension for these sources. */
+  function checkSaveTarget(ext) {
+    var note = $('#saveTargetNote');
+    if (!note) return;
+    if (!S.saveHandle) {
+      if (!window.showSaveFilePicker) {
+        note.textContent = 'This browser has no save-location picker, so the compilation will arrive ' +
+          'as a normal download.';
+      }
+      return;
+    }
+    if (ext && C.extOf(S.saveHandle.name) !== ext) {
+      note.textContent = 'The file you chose (' + S.saveHandle.name + ') does not end in ' + ext +
+        ', which is what these sources will produce. Choose the location again, or the compilation ' +
+        'will be offered as a download instead.';
+      note.className = 'small warnline';
+    } else {
+      note.textContent = 'Will be written straight to: ' + S.saveHandle.name;
+      note.className = 'dim small';
+    }
   }
 
   function wireSources() {
@@ -771,6 +813,22 @@
 
     var outName = C.sanitizeName($('#outputName').value.replace(/\.[^.]*$/, '')) + ext;
     $('#outputName').value = outName;
+
+    // A save location picked earlier is a file with a fixed name, and there is
+    // no way to rename it once the container turns out to be something else.
+    // Writing anyway would put a QuickTime file on disk called .mp4, so drop
+    // the handle and hand the result over as a correctly named download.
+    if (S.saveHandle && C.extOf(S.saveHandle.name) !== ext) {
+      log('The save location you chose is "' + S.saveHandle.name + '", but this compilation is ' +
+        ext + '. A file cannot be renamed after it has been picked, so it will be offered as a ' +
+        'download called ' + outName + ' instead.', 'warnline');
+      S.saveHandle = null;
+      var note = $('#saveTargetNote');
+      if (note) {
+        note.textContent = 'Save location cleared -- it did not end in ' + ext + '.';
+        note.className = 'small warnline';
+      }
+    }
     log("Re-encoding with '" + enc.name + "'" + (target.profile ? ' (' + target.profile + ')' : '') +
       ", pix_fmt '" + target.pix_fmt + "', " +
       (enc.interlaced ? 'interlaced (' + target.field_order + ').' : 'progressive.'));
@@ -929,17 +987,48 @@
     showResult(blob, name, null);
   }
 
+  /** Extension list for the save picker, most likely container first. */
+  function saveExtensions(want) {
+    var all = ['.mp4', '.mov', '.mkv', '.avi', '.webm', '.ts', '.m4v', '.mxf', '.mpg', '.dv'];
+    if (!want) return all;
+    return [want].concat(all.filter(function (e) { return e !== want; }));
+  }
+
   function showResult(blob, name, savedAs) {
     if (S.lastObjectURL) URL.revokeObjectURL(S.lastObjectURL);
     S.lastObjectURL = URL.createObjectURL(blob);
     var box = $('#result');
     box.hidden = false;
+    var canPick = !!window.showSaveFilePicker;
     box.innerHTML =
       (savedAs ? '<strong>Saved to ' + esc(savedAs) + '</strong> — ' : '<strong>Compilation ready</strong> — ') +
       '<a id="dl" download="' + esc(name) + '">download ' + esc(name) + '</a> (' + C.formatBytes(blob.size) + ')' +
+      (!savedAs && canPick ? ' <button type="button" id="btnSaveAs">Save somewhere else…</button>' : '') +
       '<video controls playsinline></video>';
     box.querySelector('#dl').href = S.lastObjectURL;
     box.querySelector('video').src = S.lastObjectURL;
+
+    // Picking a location now works even when it could not before the render,
+    // because this click is a fresh user gesture and the name is already final.
+    var saveAs = box.querySelector('#btnSaveAs');
+    if (saveAs) {
+      saveAs.addEventListener('click', async function () {
+        try {
+          var handle = await window.showSaveFilePicker({
+            suggestedName: name,
+            types: [{ description: 'Video', accept: { 'video/*': saveExtensions(C.extOf(name)) } }]
+          });
+          var writable = await handle.createWritable();
+          await writable.write(blob);
+          await writable.close();
+          log('Saved to ' + handle.name);
+          saveAs.textContent = 'Saved to ' + handle.name;
+          saveAs.disabled = true;
+        } catch (e) {
+          if (e && e.name !== 'AbortError') log('Could not save: ' + e.message, 'err');
+        }
+      });
+    }
     if (!savedAs) box.querySelector('#dl').click();
   }
 
@@ -1006,12 +1095,15 @@
         return;
       }
       try {
+        var want = C.guessOutputContainer(S.items.map(function (it) { return it.label; }));
         S.saveHandle = await window.showSaveFilePicker({
           suggestedName: $('#outputName').value.trim() || 'random_compilation.mp4',
-          types: [{ description: 'Video', accept: { 'video/*': ['.mp4', '.mov', '.mkv', '.avi', '.webm', '.ts', '.m4v'] } }]
+          // The likely container goes first so the picker offers that extension
+          // rather than silently appending .mp4 to a QuickTime file.
+          types: [{ description: 'Video', accept: { 'video/*': saveExtensions(want) } }]
         });
         $('#outputName').value = S.saveHandle.name;
-        $('#saveTargetNote').textContent = 'Will be written straight to: ' + S.saveHandle.name;
+        checkSaveTarget(want);
       } catch (e) { /* user dismissed the picker */ }
     });
   }
@@ -1045,6 +1137,9 @@
   // markup is present, which lets that page load this file as-is.
   window.RCMApp = {
     state: S,
+    addFiles: addFiles,
+    renderSources: renderSources,
+    syncOutputExtension: syncOutputExtension,
     installEngine: installEngine,
     installedBytes: installedBytes,
     createEngine: createEngine,

@@ -48,6 +48,40 @@
     return VIDEO_EXTS.indexOf(extOf(name)) >= 0;
   }
 
+  /**
+   * The container the output will most likely end up in, worked out from the
+   * source file names alone.
+   *
+   * The real answer only arrives after probing, because it comes from the
+   * codec group the user renders as -- but that group's container is one of
+   * these extensions, so the commonest one is right nearly every time. It
+   * exists so the save-location picker can offer the correct extension BEFORE
+   * the render starts: a handle picked as .mp4 cannot be renamed to .mov
+   * afterwards, and would leave a QuickTime file wearing an .mp4 name.
+   *
+   * Returns null when there is nothing to go on.
+   */
+  function guessOutputContainer(names) {
+    var counts = {};
+    (names || []).forEach(function (n) {
+      var ext = extOf(n);
+      if (VIDEO_EXTS.indexOf(ext) < 0) return;
+      counts[ext] = (counts[ext] || 0) + 1;
+    });
+    var keys = Object.keys(counts);
+    if (!keys.length) return null;
+    keys.sort(function (a, b) {
+      return (counts[b] - counts[a]) || (a < b ? -1 : 1);
+    });
+    return keys[0];
+  }
+
+  /** Swap a file name's extension, keeping the stem. */
+  function withExtension(name, ext) {
+    var stem = String(name || '').replace(/\.[^.\\/]*$/, '');
+    return (stem || 'random_compilation') + ext;
+  }
+
   // ------------------------------------------------------------------------ //
   // Frame-rate helpers
   // ------------------------------------------------------------------------ //
@@ -1055,6 +1089,8 @@
     extOf: extOf,
     baseName: baseName,
     isVideoName: isVideoName,
+    guessOutputContainer: guessOutputContainer,
+    withExtension: withExtension,
     parseFraction: parseFraction,
     fpsKey: fpsKey,
     formatFps: formatFps,

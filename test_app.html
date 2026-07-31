@@ -75,6 +75,34 @@
       var A = W.RCMApp;
       check(true, 'index.html loaded and wired up');
 
+      // -- the output extension must follow the sources straight away --------
+      // Regression: a save location picked while the field still said .mp4
+      // produced a QuickTime file on disk named .mp4, because a picked file
+      // cannot be renamed once the real container is known.
+      check(D.getElementById('outputName').value === 'random_compilation.mp4',
+        'output name starts at the .mp4 default', D.getElementById('outputName').value);
+      A.addFiles([new W.File([new Uint8Array(64)], 'shot1.mov'),
+                  new W.File([new Uint8Array(64)], 'shot2.mov')]);
+      check(D.getElementById('outputName').value === 'random_compilation.mov',
+        'adding .mov sources switches the output name to .mov immediately',
+        D.getElementById('outputName').value);
+
+      A.addFiles([new W.File([new Uint8Array(64)], 'a.mxf'), new W.File([new Uint8Array(64)], 'b.mxf'),
+                  new W.File([new Uint8Array(64)], 'c.mxf')]);
+      check(D.getElementById('outputName').value === 'random_compilation.mxf',
+        'the extension follows the commonest source container', D.getElementById('outputName').value);
+
+      // A stale save location must be reported rather than silently used.
+      A.state.saveHandle = { name: 'wrong.mp4' };
+      A.syncOutputExtension();
+      check(/does not end in \.mxf/.test(D.getElementById('saveTargetNote').textContent),
+        'a save file with the wrong extension is called out',
+        D.getElementById('saveTargetNote').textContent);
+      A.state.saveHandle = null;
+
+      A.state.items = [];
+      A.renderSources();
+
       // -- build source material with a throwaway engine ---------------------
       var gen = await A.createEngine('gen');
       var aBytes = await makeVideo(gen, 'a.mp4', 320, 240, 30, 4);

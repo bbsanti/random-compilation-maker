@@ -226,7 +226,7 @@ progress {
   word-break: break-word;
 }
 .log .err { color: var(--bad); }
-.log .warnline { color: var(--warn); }
+.warnline { color: var(--warn); }
 
 #result {
   margin-top: .75rem;

@@ -108,7 +108,16 @@ python -m http.server 8000
 
 then open `http://localhost:8000/`.
 
-## Browser support
+## Where the file ends up
+
+The output container follows the sources, so the output **name** does too: add a folder of ProRes `.mov` files and
+the name becomes `random_compilation.mov` straight away, before you pick anywhere to save it. That matters because
+a save location chosen through *Choose location…* is a file with a fixed name, and the browser cannot rename it
+later — pick `.mp4` and you would get a QuickTime file wearing an `.mp4` extension.
+
+If the container still turns out differently once the sources have been probed (mixed formats, or an encoder this
+build cannot run), the app refuses to write to the stale location, says so in the log, and hands you the
+compilation as a correctly named download with a *Save somewhere else…* button.
 
 * **Chrome / Edge** — everything, including *Choose location…*, which writes the finished file straight to a path
   you pick (File System Access API).
