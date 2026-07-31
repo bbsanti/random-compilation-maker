@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>app test</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  main { padding-top: 1.5rem; }
+  .case { font-family: var(--mono); font-size: .82rem; padding: .15rem 0; white-space: pre-wrap; }
+  .pass { color: var(--ok); }
+  .fail { color: var(--bad); }
+  .verdict { font-size: 1.1rem; font-weight: 700; padding: .6rem .8rem; border-radius: 6px; margin: 0 0 1rem; }
+  .verdict.pass { background: var(--ok-bg); }
+  .verdict.fail { background: var(--bad-bg); }
+  iframe { width: 100%; height: 400px; border: 1px solid var(--line); border-radius: 6px; margin-top: 1rem; }
+</style>
+</head>
+<body>
+<main>
+  <h1>app test</h1>
+  <p class="dim small">
+    Drives the real <code>index.html</code> in an iframe: hands it two videos at different formats, sets the
+    parameters, presses <em>Create compilation</em>, answers the mixed-format dialog and waits for the file.
+    Exercises the multi-worker encode path and the save-to-chosen-file path.
+  </p>
+  <p id="verdict" class="verdict">running…</p>
+  <div id="results"></div>
+  <iframe id="app" src="index.html"></iframe>
+</main>
+
+<script>
+(function () {
+  'use strict';
+  var pass = 0, fail = 0, notes = [];
+
+  function out(cls, text) {
+    var d = document.createElement('div');
+    d.className = 'case ' + cls;
+    d.textContent = text;
+    document.getElementById('results').appendChild(d);
+  }
+  function check(ok, label, detail) {
+    if (ok) pass++; else fail++;
+    out(ok ? 'pass' : 'fail', (ok ? 'ok   ' : 'FAIL ') + label + (detail ? '  --  ' + detail : ''));
+  }
+  function info(t) { notes.push(t); out('dim', '     ' + t); }
+  function sleep(ms) { return new Promise(function (r) { setTimeout(r, ms); }); }
+
+  async function waitFor(fn, ms, what) {
+    var end = Date.now() + ms;
+    for (;;) {
+      var v = fn();
+      if (v) return v;
+      if (Date.now() > end) throw new Error('timed out waiting for ' + what);
+      await sleep(250);
+    }
+  }
+
+  async function makeVideo(eng, name, w, h, fps, secs) {
+    var rc = await eng.ff.exec(['-hide_banner', '-y', '-filter_complex',
+      'testsrc2=size=' + w + 'x' + h + ':rate=' + fps + ':duration=' + secs + ',format=yuv420p',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30', name]);
+    if (rc !== 0) throw new Error('test video generation failed (' + rc + ')');
+    return await eng.ff.readFile(name);
+  }
+
+  async function main() {
+    var frame = document.getElementById('app');
+    try {
+      await waitFor(function () {
+        return frame.contentWindow && frame.contentWindow.RCMApp && frame.contentDocument.getElementById('btnRun');
+      }, 20000, 'the app to load');
+      var W = frame.contentWindow;
+      var D = frame.contentDocument;
+      var A = W.RCMApp;
+      check(true, 'index.html loaded and wired up');
+
+      // -- build source material with a throwaway engine ---------------------
+      var gen = await A.createEngine('gen');
+      var aBytes = await makeVideo(gen, 'a.mp4', 320, 240, 30, 4);
+      var bBytes = await makeVideo(gen, 'b.mp4', 480, 270, 25, 3);
+      A.killEngine(gen);
+      check(aBytes.length > 1000 && bBytes.length > 1000, 'test sources built');
+
+      // -- hand them to the app ----------------------------------------------
+      A.state.items = [
+        { id: 1, file: new W.File([aBytes], 'a.mp4', { type: 'video/mp4' }), label: 'a.mp4' },
+        { id: 2, file: new W.File([bBytes], 'b.mp4', { type: 'video/mp4' }), label: 'sub/b.mp4' }
+      ];
+
+      // A fake save target: exercises the write-to-chosen-file branch and keeps
+      // the test from firing a real download.
+      var written = null;
+      A.state.saveHandle = {
+        name: 'app_test_output.mp4',
+        createWritable: async function () {
+          return {
+            write: async function (blob) { written = blob; },
+            close: async function () { }
+          };
+        }
+      };
+
+      D.getElementById('clipCount').value = '6';
+      D.getElementById('minLen').value = '0.8';
+      D.getElementById('maxLen').value = '1.6';
+      D.getElementById('workers').value = '2';
+      D.getElementById('seed').value = 'app-test';
+      D.getElementById('shuffle').checked = true;
+      D.getElementById('outputName').value = 'app test output.mov';
+
+      // -- run -----------------------------------------------------------------
+      D.getElementById('btnRun').click();
+      check(D.getElementById('btnRun').disabled, 'Run disables itself while working');
+      check(!D.getElementById('btnCancel').disabled, 'Cancel becomes available while working');
+
+      // -- answer the mixed-format dialog ---------------------------------------
+      await waitFor(function () { return D.getElementById('formatDialog').open; }, 90000, 'the format dialog');
+      check(true, 'mixed formats opened the picker');
+      var rows = D.querySelectorAll('#srcTable tbody tr');
+      check(rows.length === 2, 'picker lists both sources', String(rows.length));
+      info('picker summary: ' + D.getElementById('dlgSummary').textContent.replace(/\n/g, ' | '));
+      D.getElementById('btnIncludeAll').click();
+      var kept = D.querySelectorAll('#srcTable tbody tr:not(.excluded)').length;
+      check(kept === 2, '"Keep everything" includes both sources', String(kept));
+      D.getElementById('btnDlgOk').click();
+
+      // -- wait for the render ---------------------------------------------------
+      var logText = function () { return D.getElementById('log').textContent; };
+      await waitFor(function () {
+        return /Done!|ERROR:|Cancelled\./.test(logText());
+      }, 480000, 'the render to finish');
+
+      var text = logText();
+      check(!/ERROR:/.test(text), 'render finished without errors',
+        (/ERROR:[^\n]*/.exec(text) || [''])[0]);
+      check(/on 2 parallel worker\(s\)/.test(text), 'used 2 parallel encoders',
+        (/Planned[^\n]*/.exec(text) || [''])[0]);
+      // Resolution and frame rate are picked independently, so with one source
+      // supplying each, both end up conformed -- on different axes.
+      check(/conforming \(frame rate\): a\.mp4/.test(text), 'conformed source A to the target frame rate');
+      check(/conforming \(resolution\): sub\/b\.mp4/.test(text), 'conformed source B to the target resolution');
+      check(/Included: 2 file\(s\) -- 0 exact, 2 conformed/.test(text), 'kept both sources by conforming them');
+      check(/encoded 6\/6/.test(text), 'encoded all 6 clips');
+      check(/Done!/.test(text), 'reported completion');
+
+      check(written !== null, 'wrote to the chosen save target');
+      if (written) {
+        check(written.size > 1000, 'output file has content', (written.size / 1024).toFixed(1) + ' KB');
+        info('output blob type: ' + written.type);
+      }
+
+      // The name is sanitised and the extension is forced to the source
+      // container, so the ".mov" that was typed in becomes ".mp4".
+      var name = D.getElementById('outputName').value;
+      check(name === 'app_test_output.mp4', 'output name sanitised and container applied', name);
+      check(!D.getElementById('result').hidden, 'result panel shown');
+      check(D.getElementById('btnRun').disabled === false, 'Run is re-enabled afterwards');
+      check(D.getElementById('progress').value === 100, 'progress reached 100%',
+        String(D.getElementById('progress').value));
+
+      info('--- app log ---');
+      text.split('\n').forEach(function (l) { if (l.trim()) info(l); });
+
+      // -- cancelling a long render --------------------------------------------
+      D.getElementById('clipCount').value = '40';
+      D.getElementById('btnRun').click();
+      await waitFor(function () { return D.getElementById('formatDialog').open; }, 90000, 'the dialog again');
+      D.getElementById('btnIncludeAll').click();
+      D.getElementById('btnDlgOk').click();
+      await waitFor(function () { return /Planned 40 clip/.test(logText()); }, 120000, 'the long render to start');
+      await sleep(1500);
+      D.getElementById('btnCancel').click();
+      await waitFor(function () { return /^|\n/.test('') && /Cancelled\.\s*$/m.test(logText()); },
+        90000, 'the cancel to take effect');
+      check(true, 'cancel stops a running render');
+      check(D.getElementById('btnRun').disabled === false, 'Run is usable again after cancelling');
+      check(D.getElementById('btnCancel').disabled === true, 'Cancel is disabled again after cancelling');
+      check(!/encoded 40\/40/.test(logText()), 'cancel actually stopped the work early');
+    } catch (e) {
+      check(false, 'app test threw', (e && e.message) || String(e));
+      try { info('app log: ' + frame.contentDocument.getElementById('log').textContent.slice(-1500)); } catch (e2) { }
+    }
+
+    var v = document.getElementById('verdict');
+    v.textContent = (fail === 0 ? 'PASS' : 'FAIL') + ' — ' + pass + ' passed, ' + fail + ' failed';
+    v.className = 'verdict ' + (fail === 0 ? 'pass' : 'fail');
+    document.title = (fail === 0 ? 'PASS' : 'FAIL') + ' ' + pass + '/' + (pass + fail);
+
+    var report = /[?&]report=([^&]+)/.exec(location.search);
+    if (report) {
+      try {
+        await fetch(decodeURIComponent(report[1]), {
+          method: 'POST',
+          body: JSON.stringify({
+            pass: pass, fail: fail,
+            lines: Array.prototype.map.call(document.querySelectorAll('#results .case'),
+              function (n) { return n.textContent; })
+          })
+        });
+      } catch (e) { /* nothing listening */ }
+    }
+  }
+
+  main();
+}());
+</script>
+</body>
+</html>

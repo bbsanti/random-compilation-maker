@@ -1,0 +1,186 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Random Compilation Maker</title>
+<meta name="description" content="Cut random clips out of your videos and stitch them into one compilation. Runs entirely in your browser.">
+<link rel="stylesheet" href="style.css">
+<link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 16 16'><text y='13' font-size='13'>&#127916;</text></svg>">
+</head>
+<body>
+
+<header class="topbar">
+  <div class="brand">
+    <h1>Random Compilation Maker</h1>
+    <p class="dim small">Cuts random clips out of your videos and stitches them into one file. Everything runs on this
+      computer &mdash; no video is ever uploaded.</p>
+  </div>
+  <div class="engine">
+    <span id="engineStatus" class="chip">Checking for FFmpeg&hellip;</span>
+    <div class="engine-btns">
+      <button id="btnInstall" type="button" class="ghost">Install FFmpeg</button>
+      <button id="btnUninstall" type="button" class="ghost" hidden>Remove</button>
+    </div>
+    <div id="encoderChips" class="chips"></div>
+  </div>
+</header>
+
+<main>
+
+  <!-- 1. Sources ------------------------------------------------------- -->
+  <section class="card">
+    <h2>1. Source videos</h2>
+
+    <div id="dropZone" class="drop">
+      <ul id="sourceList" class="filelist" aria-label="Source videos"></ul>
+      <p id="dropHint" class="drop-hint">Drop video files or a folder here, or use the buttons below.</p>
+    </div>
+
+    <div class="row">
+      <button id="btnAddFiles" type="button">Add files&hellip;</button>
+      <button id="btnAddFolder" type="button">Add folder&hellip;</button>
+      <button id="btnRemove" type="button" class="ghost">Remove selected</button>
+      <button id="btnClear" type="button" class="ghost">Clear</button>
+      <label class="check"><input type="checkbox" id="recurse" checked> Include subfolders</label>
+      <span class="spacer"></span>
+      <span id="countLabel" class="dim">0 videos</span>
+    </div>
+
+    <input type="file" id="filePicker" multiple accept="video/*" hidden>
+    <input type="file" id="folderPicker" webkitdirectory directory multiple hidden>
+  </section>
+
+  <!-- 2. Parameters ---------------------------------------------------- -->
+  <section class="card">
+    <h2>2. Parameters</h2>
+
+    <div class="grid">
+      <label class="radio">
+        <input type="radio" name="mode" value="count" id="modeCount" checked>
+        By number of clips
+      </label>
+      <input type="number" id="clipCount" min="1" max="100000" step="1" value="10">
+
+      <label class="radio">
+        <input type="radio" name="mode" value="duration" id="modeDuration">
+        By total duration (s)
+      </label>
+      <input type="number" id="totalDuration" min="1" max="1000000" step="1" value="60" disabled>
+
+      <label for="minLen">Min clip length (s):</label>
+      <input type="number" id="minLen" min="0.1" max="3600" step="0.5" value="1">
+
+      <label for="maxLen">Max clip length (s):</label>
+      <input type="number" id="maxLen" min="0.1" max="3600" step="0.5" value="3">
+
+      <label class="check"><input type="checkbox" id="shuffle" checked> Shuffle clip order</label>
+      <span></span>
+
+      <label for="seed">Random seed (optional):</label>
+      <input type="text" id="seed" placeholder="blank = different every run">
+
+      <label for="workers">Parallel encodes:</label>
+      <input type="number" id="workers" min="1" max="8" step="1" value="2">
+
+      <span class="dim small span2" id="workersNote">
+        Each parallel encode is a separate FFmpeg instance, so more of them means more memory.
+      </span>
+    </div>
+
+    <p class="note">
+      Output keeps the source resolution, frame rate, field order, codec and file type. If the sources disagree on any
+      of those, you'll be asked which format to render as and which mismatched clips to exclude. Audio is always
+      removed; clips are re-encoded, so cuts are frame-accurate.
+    </p>
+  </section>
+
+  <!-- 3. Output -------------------------------------------------------- -->
+  <section class="card">
+    <h2>3. Output file</h2>
+    <div class="row">
+      <input type="text" id="outputName" class="grow" value="random_compilation.mp4">
+      <button id="btnChooseOut" type="button" class="ghost">Choose location&hellip;</button>
+      <span class="dim small">(extension auto-matches the source container)</span>
+    </div>
+    <p id="saveTargetNote" class="dim small"></p>
+  </section>
+
+  <!-- Run -------------------------------------------------------------- -->
+  <section class="card">
+    <div class="row">
+      <button id="btnRun" type="button" class="primary">Create compilation</button>
+      <button id="btnCancel" type="button" class="ghost" disabled>Cancel</button>
+      <progress id="progress" class="grow" value="0" max="100"></progress>
+      <span id="progressPct" class="dim mono">0%</span>
+    </div>
+    <p id="stage" class="dim small"></p>
+    <div id="result" hidden></div>
+  </section>
+
+  <!-- Log -------------------------------------------------------------- -->
+  <section class="card">
+    <h2>Log</h2>
+    <pre id="log" class="log" aria-live="polite"></pre>
+  </section>
+
+</main>
+
+<footer class="dim small">
+  <p>
+    Your videos never leave this machine: they are read straight off disk into a local WebAssembly build of FFmpeg.
+    The only thing this page downloads is the FFmpeg engine itself, once.
+  </p>
+</footer>
+
+<!-- Mixed-format picker ------------------------------------------------ -->
+<dialog id="formatDialog">
+  <form method="dialog" class="dlg">
+    <h2>Mixed source formats &mdash; choose what to render as</h2>
+    <p class="dim small">
+      Your source videos do not all share one codec, resolution and frame rate. Pick the format to RENDER AS, then
+      choose which sources to keep. A kept source that doesn't match is conformed to the pick; an unchecked one is
+      excluded from the compilation.
+    </p>
+
+    <div class="picks">
+      <fieldset><legend>Resolution</legend><div id="pickRes"></div></fieldset>
+      <fieldset><legend>Frame rate</legend><div id="pickFps"></div></fieldset>
+      <fieldset><legend>Codec / container</legend><div id="pickCodec"></div></fieldset>
+    </div>
+
+    <div class="row">
+      <label for="scaleMode">When a kept clip has a different resolution:</label>
+      <select id="scaleMode"></select>
+    </div>
+
+    <div class="row">
+      <button type="button" id="btnExcludeMismatch" class="ghost">Exclude every mismatch</button>
+      <button type="button" id="btnIncludeAll" class="ghost">Keep everything (conform)</button>
+      <span class="dim small">(or click a row's Use box)</span>
+    </div>
+
+    <div class="tablewrap">
+      <table id="srcTable">
+        <thead>
+          <tr><th>Use</th><th>File</th><th>Resolution</th><th>FPS</th><th>Codec / container</th><th>Status</th></tr>
+        </thead>
+        <tbody></tbody>
+      </table>
+    </div>
+
+    <p id="dlgSummary" class="summary"></p>
+
+    <div class="row end">
+      <button type="button" id="btnDlgCancel" class="ghost">Cancel</button>
+      <button type="button" id="btnDlgOk" class="primary">Render with these settings</button>
+    </div>
+  </form>
+</dialog>
+
+<script src="lib/ffmpeg/ffmpeg.js" defer></script>
+<script src="lib/ffmpeg/util.js" defer></script>
+<script src="core.js" defer></script>
+<script src="app.js" defer></script>
+</body>
+</html>

@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>pipeline test</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  main { padding-top: 1.5rem; }
+  .case { font-family: var(--mono); font-size: .82rem; padding: .15rem 0; white-space: pre-wrap; }
+  .pass { color: var(--ok); }
+  .fail { color: var(--bad); }
+  .verdict { font-size: 1.1rem; font-weight: 700; padding: .6rem .8rem; border-radius: 6px; margin: 0 0 1rem; }
+  .verdict.pass { background: var(--ok-bg); }
+  .verdict.fail { background: var(--bad-bg); }
+</style>
+</head>
+<body>
+<main>
+  <h1>pipeline test</h1>
+  <p class="dim small">
+    Runs the real thing end to end in this browser: installs the FFmpeg engine, makes two test videos at different
+    resolutions and frame rates, mounts them the way the app does, probes them, conforms and cuts random clips, and
+    concatenates the result &mdash; then probes the output to check it came out at the target format.
+    This takes a couple of minutes the first time.
+  </p>
+  <p id="verdict" class="verdict">running…</p>
+  <div id="results"></div>
+</main>
+
+<script src="lib/ffmpeg/ffmpeg.js"></script>
+<script src="lib/ffmpeg/util.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
+<script>
+(function () {
+  'use strict';
+  var C = window.RCM;
+  var A = window.RCMApp;
+  var pass = 0, fail = 0, notes = [];
+
+  function out(cls, text) {
+    var d = document.createElement('div');
+    d.className = 'case ' + cls;
+    d.textContent = text;
+    document.getElementById('results').appendChild(d);
+  }
+  function check(ok, label, detail) {
+    if (ok) pass++; else fail++;
+    out(ok ? 'pass' : 'fail', (ok ? 'ok   ' : 'FAIL ') + label + (detail ? '  --  ' + detail : ''));
+  }
+  function info(text) { notes.push(text); out('dim', '     ' + text); }
+  function near(a, b, tol) { return Math.abs(a - b) <= tol; }
+
+  /** Make a test video inside the engine, however this build allows. */
+  async function makeVideo(eng, name, w, h, fps, secs) {
+    var graph = [
+      'testsrc2=size=' + w + 'x' + h + ':rate=' + fps + ':duration=' + secs + ',format=yuv420p',
+      'color=c=blue:size=' + w + 'x' + h + ':rate=' + fps + ':duration=' + secs + ',format=yuv420p'
+    ];
+    for (var i = 0; i < graph.length; i++) {
+      var rc = await eng.ff.exec(['-hide_banner', '-y', '-filter_complex', graph[i],
+        '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30', name]);
+      if (rc === 0) return graph[i].split('=')[0];
+    }
+    // No synthetic sources in this build: hand-build raw frames instead.
+    var ySize = w * h, cW = w >> 1, cH = h >> 1, cSize = cW * cH;
+    var frames = Math.round(fps * secs);
+    var buf = new Uint8Array((ySize + 2 * cSize) * frames);
+    var at = 0;
+    for (var f = 0; f < frames; f++) {
+      for (var y = 0; y < h; y++) {
+        for (var x = 0; x < w; x++) buf[at + y * w + x] = (x + y + f * 4) & 0xff;
+      }
+      at += ySize;
+      buf.fill(128, at, at + 2 * cSize);
+      at += 2 * cSize;
+    }
+    await eng.ff.writeFile('raw.yuv', buf);
+    var rrc = await eng.ff.exec(['-hide_banner', '-y', '-f', 'rawvideo', '-pix_fmt', 'yuv420p',
+      '-s', w + 'x' + h, '-r', String(fps), '-i', 'raw.yuv',
+      '-c:v', 'libx264', '-preset', 'ultrafast', '-crf', '30', name]);
+    try { await eng.ff.deleteFile('raw.yuv'); } catch (e) { /* fine */ }
+    if (rrc !== 0) throw new Error('could not build a test video (exit ' + rrc + ')');
+    return 'rawvideo';
+  }
+
+  async function probePath(eng, path) {
+    eng.collect = [];
+    try {
+      await eng.ff.exec(['-hide_banner', '-i', path, '-t', '0', '-f', 'null', '-']);
+    } catch (e) { /* the banner is what matters */ }
+    var lines = eng.collect;
+    eng.collect = null;
+    return { info: C.parseProbeLog(lines, path), lines: lines };
+  }
+
+  async function main() {
+    var eng = null;
+    try {
+      // -- 1. install -------------------------------------------------------
+      var t0 = performance.now();
+      await A.installEngine(false);
+      var bytes = await A.installedBytes();
+      check(bytes !== null && bytes > 10 * 1024 * 1024, 'engine installed into Cache Storage',
+        bytes === null ? 'nothing cached' : C.formatBytes(bytes));
+      info('install took ' + ((performance.now() - t0) / 1000).toFixed(1) + 's');
+
+      // a second install must be served from the local cache, not the network
+      var t1 = performance.now();
+      await A.installEngine(false);
+      info('second installEngine() call: ' + (performance.now() - t1).toFixed(0) + 'ms (cached)');
+
+      // -- 2. engine --------------------------------------------------------
+      eng = await A.createEngine('test');
+      check(true, 'FFmpeg instance loaded');
+      var encoders = await A.probeEncoders(eng);
+      check(!!encoders && encoders.size > 0, 'encoder list read', encoders ? encoders.size + ' encoders' : 'none');
+      if (encoders) {
+        ['libx264', 'libx265', 'prores_ks', 'mpeg2video', 'mpeg4', 'mjpeg', 'libvpx-vp9', 'dnxhd', 'dvvideo', 'libaom-av1']
+          .forEach(function (e) { info((encoders.has(e) ? 'have ' : 'MISSING ') + e); });
+        check(encoders.has('libx264'), 'libx264 present (the fallback encoder)');
+      }
+
+      // -- 3. test material --------------------------------------------------
+      var howA = await makeVideo(eng, 'a.mp4', 320, 240, 30, 4);
+      var howB = await makeVideo(eng, 'b.mp4', 480, 270, 25, 3);
+      info('test videos generated with ' + howA + ' / ' + howB);
+      var aBytes = await eng.ff.readFile('a.mp4');
+      var bBytes = await eng.ff.readFile('b.mp4');
+      check(aBytes.length > 1000 && bBytes.length > 1000, 'test videos encoded',
+        C.formatBytes(aBytes.length) + ' + ' + C.formatBytes(bBytes.length));
+
+      // -- 4. mount them the way the app does --------------------------------
+      var items = [
+        { id: 1, file: new File([aBytes], 'a.mp4', { type: 'video/mp4' }), label: 'a.mp4' },
+        { id: 2, file: new File([bBytes], 'b.mp4', { type: 'video/mp4' }), label: 'sub/b.mp4' }
+      ];
+      await A.mountSources(eng, items);
+      check(true, 'WORKERFS mount of source files');
+
+      // -- 5. probe ----------------------------------------------------------
+      var good = await A.probeAll(eng, items);
+      check(good.length === 2, 'both sources probed', good.length + ' of 2');
+      if (good.length !== 2) throw new Error('probe failed, cannot continue');
+      good.forEach(function (g) {
+        info('probed ' + g.label + ': ' + g.codec + ' ' + g.width + 'x' + g.height + ' @ ' +
+          C.formatFps(g.fps) + ' (' + g.fps_frac + ') ' + g.field_order +
+          ' ' + g.pix_fmt + ' ' + (g.profile || 'no-profile') + ' ' + g.duration.toFixed(2) + 's');
+      });
+      var pa = good[0], pb = good[1];
+      check(pa.codec === 'h264' && pa.width === 320 && pa.height === 240,
+        'parseProbeLog read source A', pa.codec + ' ' + pa.width + 'x' + pa.height);
+      check(pa.fps_key === 30 && pa.fps_frac === '30/1', 'parseProbeLog read A frame rate',
+        pa.fps_key + ' / ' + pa.fps_frac);
+      check(near(pa.duration, 4, 0.3), 'parseProbeLog read A duration', String(pa.duration));
+      check(pb.width === 480 && pb.height === 270 && pb.fps_key === 25,
+        'parseProbeLog read source B', pb.width + 'x' + pb.height + ' @ ' + pb.fps_key);
+      check(pa.pix_fmt === 'yuv420p', 'parseProbeLog read the pixel format', String(pa.pix_fmt));
+      check(!C.isInterlaced(pa), 'progressive source detected as progressive', pa.field_order);
+
+      // -- 6. mixed-format handling ------------------------------------------
+      check(C.distinctResolutions(good).length === 2 && C.distinctFps(good).length === 2,
+        'mixed resolutions and frame rates detected');
+      var target = C.buildTarget([pa.width, pa.height], pa.fps_key, pa.fps_frac, pa, 'fit');
+      var filtersB = C.buildConformFilters(pb, target);
+      check(filtersB.length > 0, 'source B needs conforming', filtersB.join(','));
+      pa.vf = null;
+      pb.vf = filtersB.join(',');
+
+      // -- 7. plan + encode ---------------------------------------------------
+      var runOpts = {
+        mode: 'count', clip_count: 5, total_duration: 0,
+        min_len: 0.8, max_len: 1.6, shuffle: true,
+        encode_args: C.buildVideoEncodeArgs(target, encoders).args,
+        fps_frac: target.fps_frac
+      };
+      info('encode args: ' + runOpts.encode_args.join(' '));
+      var clips = C.planClips(good, runOpts, C.makeRng('pipeline-test'));
+      check(clips.length === 5, 'planned 5 clips', String(clips.length));
+      var wantDuration = clips.reduce(function (a, c) { return a + c.length; }, 0);
+      info('planned total ' + wantDuration.toFixed(3) + 's across ' +
+        new Set(clips.map(function (c) { return c.path; })).size + ' distinct source(s)');
+
+      var names = [];
+      for (var i = 0; i < clips.length; i++) {
+        var name = 'clip_' + String(i + 1).padStart(5, '0') + '.mp4';
+        eng.tail = [];
+        var rc = await eng.ff.exec(C.buildClipArgs(clips[i], runOpts, name));
+        if (rc !== 0) {
+          check(false, 'encode clip ' + (i + 1), 'exit ' + rc + '\n' + eng.tail.slice(-8).join('\n'));
+          throw new Error('clip encode failed');
+        }
+        var sz = (await eng.ff.readFile(name)).length;
+        check(sz > 0, 'encoded clip ' + (i + 1) + ' (' + clips[i].length.toFixed(2) + 's from ' +
+          C.baseName(clips[i].path) + ')', C.formatBytes(sz));
+        names.push('/' + name);
+      }
+
+      // -- 8. concat -----------------------------------------------------------
+      await eng.ff.writeFile('concat_list.txt', new TextEncoder().encode(C.buildConcatList(names)));
+      eng.tail = [];
+      var crc = await eng.ff.exec(C.buildConcatArgs('/concat_list.txt', 'out.mp4'));
+      check(crc === 0, 'concat demuxer stitched the clips',
+        crc === 0 ? '' : 'exit ' + crc + '\n' + eng.tail.slice(-8).join('\n'));
+      if (crc !== 0) throw new Error('concat failed');
+
+      var finalBytes = await eng.ff.readFile('out.mp4');
+      check(finalBytes.length > 1000, 'output file written', C.formatBytes(finalBytes.length));
+
+      // -- 9. verify the output ------------------------------------------------
+      var res = await probePath(eng, 'out.mp4');
+      var fin = res.info;
+      check(!!fin, 'output is readable video');
+      if (fin) {
+        info('output: ' + fin.codec + ' ' + fin.width + 'x' + fin.height + ' @ ' +
+          C.formatFps(fin.fps) + ' ' + fin.pix_fmt + ' ' + fin.duration.toFixed(2) + 's');
+        check(fin.width === target.width && fin.height === target.height,
+          'output is at the target resolution', fin.width + 'x' + fin.height);
+        // Concatenated segments never divide exactly into whole frames, so the
+        // container's average rate lands a hair off; the real check is that the
+        // stream's own rate (tbr) is the target.
+        check(near(fin.fps, target.fps, 0.05), 'output averages the target frame rate', String(fin.fps));
+        check(new RegExp(',\\s*' + C.formatFps(target.fps) + '\\s*tbr').test(res.lines.join('\n')),
+          'output stream rate (tbr) is exactly the target', C.formatFps(target.fps));
+        check(fin.codec === 'h264', 'output uses the target codec', fin.codec);
+        check(near(fin.duration, wantDuration, 0.4), 'output duration matches the plan',
+          fin.duration.toFixed(3) + 's vs planned ' + wantDuration.toFixed(3) + 's');
+        check(!/Audio:/.test(res.lines.join('\n')), 'audio was removed');
+      }
+    } catch (e) {
+      check(false, 'pipeline threw', (e && e.message) || String(e));
+    } finally {
+      if (eng) A.killEngine(eng);
+    }
+
+    var v = document.getElementById('verdict');
+    v.textContent = (fail === 0 ? 'PASS' : 'FAIL') + ' — ' + pass + ' passed, ' + fail + ' failed';
+    v.className = 'verdict ' + (fail === 0 ? 'pass' : 'fail');
+    document.title = (fail === 0 ? 'PASS' : 'FAIL') + ' ' + pass + '/' + (pass + fail);
+
+    var report = /[?&]report=([^&]+)/.exec(location.search);
+    if (report) {
+      try {
+        await fetch(decodeURIComponent(report[1]), {
+          method: 'POST',
+          body: JSON.stringify({
+            pass: pass, fail: fail, notes: notes,
+            lines: Array.prototype.map.call(document.querySelectorAll('#results .case'),
+              function (n) { return n.textContent; })
+          })
+        });
+      } catch (e) { /* nothing listening */ }
+    }
+  }
+
+  main();
+}());
+</script>
+</body>
+</html>

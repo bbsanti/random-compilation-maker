@@ -1,0 +1,234 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<title>profile fidelity test</title>
+<link rel="stylesheet" href="style.css">
+<style>
+  main { padding-top: 1.5rem; }
+  .case { font-family: var(--mono); font-size: .82rem; padding: .15rem 0; white-space: pre-wrap; }
+  .pass { color: var(--ok); }
+  .fail { color: var(--bad); }
+  .verdict { font-size: 1.1rem; font-weight: 700; padding: .6rem .8rem; border-radius: 6px; margin: 0 0 1rem; }
+  .verdict.pass { background: var(--ok-bg); }
+  .verdict.fail { background: var(--bad-bg); }
+</style>
+</head>
+<body>
+<main>
+  <h1>profile fidelity test</h1>
+  <p class="dim small">
+    Takes a real file in each codec profile, runs it through the whole pipeline the app uses &mdash; probe, target,
+    encoder arguments, two clips, concat &mdash; and checks the finished compilation reports the <em>same codec and
+    the same profile</em> as the source. A ProRes LT input has to come out ProRes LT.
+  </p>
+  <p id="verdict" class="verdict">running…</p>
+  <div id="results"></div>
+</main>
+
+<script src="lib/ffmpeg/ffmpeg.js"></script>
+<script src="lib/ffmpeg/util.js"></script>
+<script src="core.js"></script>
+<script src="app.js"></script>
+<script>
+(function () {
+  'use strict';
+  var C = window.RCM;
+  var A = window.RCMApp;
+  var report = { steps: [], cases: [] };
+  var sink = /[?&]report=([^&]+)/.exec(location.search);
+  var pass = 0, fail = 0;
+
+  function show() {
+    var el = document.getElementById('results');
+    el.innerHTML = report.cases.map(function (c) {
+      return '<div class="case ' + (c.ok ? 'pass' : 'fail') + '">' +
+        (c.ok ? 'ok   ' : 'FAIL ') + pad(c.label, 18) +
+        ' src=' + pad(c.src || '?', 34) + ' out=' + pad(c.out || '?', 34) +
+        (c.note ? '  ' + c.note : '') + '</div>';
+    }).join('');
+    var v = document.getElementById('verdict');
+    v.textContent = (report.finished ? (fail === 0 ? 'PASS' : 'FAIL') : 'running') +
+      ' — ' + pass + ' passed, ' + fail + ' failed';
+    v.className = 'verdict ' + (report.finished && fail === 0 ? 'pass' : (fail ? 'fail' : ''));
+    if (report.finished) document.title = (fail === 0 ? 'PASS' : 'FAIL') + ' ' + pass + '/' + (pass + fail);
+    if (sink) {
+      try { fetch(decodeURIComponent(sink[1]), { method: 'POST', body: JSON.stringify(report) }); } catch (e) { }
+    }
+  }
+  function pad(s, n) { s = String(s); while (s.length < n) s += ' '; return s; }
+  function step(s) { report.steps.push(s); show(); }
+
+  function withTimeout(p, ms, label) {
+    var t;
+    return Promise.race([p, new Promise(function (_r, rej) {
+      t = setTimeout(function () { rej(new Error('TIMEOUT ' + ms + 'ms: ' + label)); }, ms);
+    })]).finally(function () { clearTimeout(t); });
+  }
+
+  var CASES = [
+    { label: 'ProRes Proxy', size: '320x240', ext: '.mov',
+      gen: ['-c:v', 'prores_ks', '-profile:v', '0', '-pix_fmt', 'yuv422p10le'] },
+    { label: 'ProRes LT', size: '320x240', ext: '.mov',
+      gen: ['-c:v', 'prores_ks', '-profile:v', '1', '-pix_fmt', 'yuv422p10le'] },
+    { label: 'ProRes Standard', size: '320x240', ext: '.mov',
+      gen: ['-c:v', 'prores_ks', '-profile:v', '2', '-pix_fmt', 'yuv422p10le'] },
+    { label: 'ProRes HQ', size: '320x240', ext: '.mov',
+      gen: ['-c:v', 'prores_ks', '-profile:v', '3', '-pix_fmt', 'yuv422p10le'] },
+    { label: 'ProRes 4444', size: '320x240', ext: '.mov',
+      gen: ['-c:v', 'prores_ks', '-profile:v', '4', '-pix_fmt', 'yuva444p10le'] },
+    { label: 'ProRes XQ', size: '320x240', ext: '.mov',
+      gen: ['-c:v', 'prores_ks', '-profile:v', '5', '-pix_fmt', 'yuva444p10le'] },
+    { label: 'DNxHR LB', size: '640x360', ext: '.mxf',
+      gen: ['-c:v', 'dnxhd', '-profile:v', 'dnxhr_lb', '-pix_fmt', 'yuv422p'] },
+    { label: 'DNxHR HQX', size: '640x360', ext: '.mxf',
+      gen: ['-c:v', 'dnxhd', '-profile:v', 'dnxhr_hqx', '-pix_fmt', 'yuv422p10le'] },
+    { label: 'DNxHR 444', size: '640x360', ext: '.mxf',
+      gen: ['-c:v', 'dnxhd', '-profile:v', 'dnxhr_444', '-pix_fmt', 'yuv444p10le'] },
+    { label: 'H.264 Main', size: '320x240', ext: '.mp4',
+      gen: ['-c:v', 'libx264', '-preset', 'ultrafast', '-profile:v', 'main', '-pix_fmt', 'yuv420p'] },
+    { label: 'H.264 CBaseline', size: '320x240', ext: '.mp4',
+      gen: ['-c:v', 'libx264', '-preset', 'ultrafast', '-profile:v', 'baseline', '-pix_fmt', 'yuv420p'] },
+    { label: 'MPEG-2 4:2:2', size: '352x288', ext: '.mpg',
+      gen: ['-c:v', 'mpeg2video', '-profile:v', '0', '-b:v', '8000k', '-pix_fmt', 'yuv422p'] },
+    { label: 'MPEG-4 ASP', size: '320x240', ext: '.avi',
+      gen: ['-c:v', 'mpeg4', '-profile:v', '15', '-q:v', '3', '-pix_fmt', 'yuv420p'] },
+    { label: 'DV PAL', size: '720x576', ext: '.avi',
+      gen: ['-c:v', 'dvvideo', '-pix_fmt', 'yuv420p'] }
+  ];
+
+  // Codecs this build cannot encode. The requirement cannot be met for these,
+  // so the next best thing is a clean, announced fallback rather than a hung
+  // tab -- which is what they used to give.
+  var MUST_FALL_BACK = [
+    { codec: 'hevc', profile: 'Main', pix: 'yuv420p', ext: '.mkv', wanted: 'libx265' },
+    { codec: 'mjpeg', profile: 'Baseline', pix: 'yuvj420p', ext: '.avi', wanted: 'mjpeg' },
+    { codec: 'vp9', profile: 'Profile 0', pix: 'yuv420p', ext: '.webm', wanted: 'libvpx-vp9' }
+  ];
+
+  /** codec + profile as the app's own parser sees them. */
+  function sig(info) {
+    if (!info) return null;
+    return info.codec + '/' + (info.profile || '-');
+  }
+
+  async function probeFile(eng, path) {
+    eng.collect = [];
+    try { await eng.ff.exec(['-hide_banner', '-i', path, '-t', '0', '-f', 'null', '-']); } catch (e) { }
+    var lines = eng.collect;
+    eng.collect = null;
+    return C.parseProbeLog(lines, path);
+  }
+
+  async function runCase(spec, encoders) {
+    var out = { label: spec.label };
+    var eng = await A.createEngine('p' + spec.label.replace(/\W/g, ''));
+    try {
+      // 1. real source material in this profile
+      var rc = await eng.ff.exec(['-hide_banner', '-y', '-filter_complex',
+        'testsrc2=size=' + spec.size + ':rate=25:duration=1.2'].concat(spec.gen, ['src' + spec.ext]));
+      if (rc !== 0) { out.note = 'could not build a ' + spec.label + ' source (exit ' + rc + ')'; return out; }
+      var bytes = await eng.ff.readFile('src' + spec.ext);
+
+      // 2. hand it to the app exactly as a picked file
+      var items = [{ id: 1, file: new File([bytes], 'a' + spec.ext), label: 'a' + spec.ext }];
+      await A.mountSources(eng, items);
+      var good = await A.probeAll(eng, items);
+      if (!good.length) { out.note = 'the app could not probe it'; return out; }
+      var info = good[0];
+      out.src = sig(info);
+
+      // 3. the app's own target + encoder decision
+      var target = C.buildTarget([info.width, info.height], info.fps_key, info.fps_frac, info, 'fit');
+      var enc = C.buildVideoEncodeArgs(target, encoders);
+      out.args = enc.args.join(' ');
+      out.container = enc.container;
+      if (enc.fallback) {
+        out.note = 'fell back to ' + enc.encoder + ' (wanted ' + enc.wanted + ')';
+        return out;
+      }
+
+      // 4. two clips, then the concat -- the real pipeline
+      var runOpts = { encode_args: enc.args, fps_frac: target.fps_frac };
+      var names = [];
+      for (var i = 0; i < 2; i++) {
+        var clip = { path: info.path, start: 0.1 + i * 0.4, length: 0.3, vf: null };
+        var name = 'clip_' + i + enc.container;
+        eng.tail = [];
+        var crc = await eng.ff.exec(C.buildClipArgs(clip, runOpts, name));
+        if (crc !== 0) {
+          out.note = 'clip ' + i + ' failed (exit ' + crc + '): ' + eng.tail.slice(-3).join(' | ');
+          return out;
+        }
+        names.push('/' + name);
+      }
+      await eng.ff.writeFile('list.txt', new TextEncoder().encode(C.buildConcatList(names)));
+      eng.tail = [];
+      var jrc = await eng.ff.exec(C.buildConcatArgs('/list.txt', 'out' + enc.container));
+      if (jrc !== 0) {
+        out.note = 'concat failed (exit ' + jrc + '): ' + eng.tail.slice(-3).join(' | ');
+        return out;
+      }
+
+      // 5. the finished compilation must report the same codec AND profile
+      var fin = await probeFile(eng, 'out' + enc.container);
+      out.out = sig(fin);
+      out.ok = !!fin && fin.codec === info.codec &&
+        (fin.profile || '') === (info.profile || '');
+      if (!out.ok && fin) out.note = 'profile drifted';
+    } catch (e) {
+      out.note = 'threw: ' + String(e && e.message || e);
+    } finally {
+      A.killEngine(eng);
+    }
+    return out;
+  }
+
+  async function main() {
+    step('starting engine');
+    var probe = await A.createEngine('probe');
+    var encoders = await A.probeEncoders(probe);
+    A.killEngine(probe);
+    step('encoders: ' + (encoders ? encoders.size : 0));
+    report.usableEncoders = encoders ? Array.from(encoders).sort() : [];
+
+    for (var i = 0; i < CASES.length; i++) {
+      step('case ' + CASES[i].label);
+      var r;
+      try {
+        r = await withTimeout(runCase(CASES[i], encoders), 240000, CASES[i].label);
+      } catch (e) {
+        r = { label: CASES[i].label, note: String(e && e.message || e) };
+      }
+      if (r.ok) pass++; else fail++;
+      report.cases.push(r);
+      show();
+    }
+
+    // The codecs this build cannot do must announce a fallback, not hang.
+    MUST_FALL_BACK.forEach(function (spec) {
+      var target = {
+        width: 1920, height: 1080, fps: 25, fps_key: 25, fps_frac: '25/1',
+        codec: spec.codec, profile: spec.profile, pix_fmt: spec.pix,
+        field_order: 'progressive', ext: spec.ext, bit_rate: null, scale_mode: 'fit'
+      };
+      var enc = C.buildVideoEncodeArgs(target, encoders);
+      var r = {
+        label: spec.codec + ' fallback',
+        src: spec.codec + '/' + spec.profile,
+        out: enc.encoder,
+        ok: enc.fallback === true && enc.wanted === spec.wanted && enc.encoder === 'libx264',
+        note: enc.fallback ? ('announced: wanted ' + enc.wanted) : 'NO FALLBACK -- this would hang or crash'
+      };
+      if (r.ok) pass++; else fail++;
+      report.cases.push(r);
+    });
+
+    report.finished = true;
+    show();
+  }
+  main();
+}());
+</script>
+</body>
+</html>
