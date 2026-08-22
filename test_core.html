@@ -234,6 +234,35 @@
   eq(C.withExtension('noextension', '.mov'), 'noextension.mov', 'withExtension appends');
   eq(C.withExtension('', '.mov'), 'random_compilation.mov', 'withExtension has a default stem');
 
+  // ------------------------------------------- output size pre-flight (web only)
+  // A browser tab holds the whole compilation in RAM, so an over-large render
+  // has to be refused up front instead of dying on
+  // "RangeError: Array buffer allocation failed" twenty minutes in.
+  eq(C.estimateOutputBytes('8000000', 90), 90 * 1e6, 'estimateOutputBytes from bits per second');
+  eq(C.estimateOutputBytes(null, 90), null, 'estimateOutputBytes needs a bit rate');
+  eq(C.estimateOutputBytes('0', 90), null, 'estimateOutputBytes rejects a zero bit rate');
+  eq(C.estimateOutputBytes('8000000', 0), null, 'estimateOutputBytes needs a duration');
+  eq(C.outputSizeVerdict(null), 'unknown', 'an unknown size is not judged');
+  eq(C.outputSizeVerdict(50 * 1024 * 1024), 'ok', 'a small output is fine');
+  eq(C.outputSizeVerdict(C.SOFT_OUTPUT_LIMIT + 1), 'large', 'past the soft limit is large');
+  eq(C.outputSizeVerdict(C.HARD_OUTPUT_LIMIT + 1), 'too-big', 'past the hard limit is refused');
+
+  // ProRes HQ 1080p is ~176 Mbit/s. This is the case that actually blew up:
+  // 90 seconds of it is about 2 GB, and the tab cannot hold that.
+  var proresHQ = '176000000';
+  var ninety = C.estimateOutputBytes(proresHQ, 90);
+  record(ninety > 1.9e9 && C.outputSizeVerdict(ninety) === 'too-big',
+    '90s of ProRes HQ 1080p is refused up front', C.formatBytes(ninety));
+  var fits = C.maxSecondsAtBitRate(proresHQ);
+  record(fits >= 12 && fits <= 16, 'and it suggests a duration that comfortably fits', fits + 's');
+  eq(C.outputSizeVerdict(C.estimateOutputBytes(proresHQ, fits)), 'ok',
+    'the suggested duration really is under the limit');
+
+  // H.264 at a normal bit rate is nowhere near the ceiling.
+  eq(C.outputSizeVerdict(C.estimateOutputBytes('8000000', 90)), 'ok',
+    '90s of 8 Mbit/s H.264 is fine');
+  eq(C.maxSecondsAtBitRate(null), null, 'maxSecondsAtBitRate needs a bit rate');
+
   // ------------------------------------------------------------ clip planning
   var planSources = [
     { path: '/in/a.mp4', duration: 60, vf: null },

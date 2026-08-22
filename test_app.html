@@ -194,8 +194,13 @@
 
       check(written !== null, 'wrote to the chosen save target');
       if (written) {
-        check(written.size > 1000, 'output file has content', (written.size / 1024).toFixed(1) + ' KB');
-        info('output blob type: ' + written.type);
+        // Raw bytes, not a Blob: wrapping the output in a Blob before writing it
+        // would hold a second copy of the whole compilation in memory.
+        check(written instanceof W.Uint8Array,
+          'the save path writes raw bytes rather than a second Blob copy',
+          Object.prototype.toString.call(written));
+        var writtenSize = (written.size === undefined) ? written.length : written.size;
+        check(writtenSize > 1000, 'output file has content', (writtenSize / 1024).toFixed(1) + ' KB');
       }
 
       // The name is sanitised and the extension is forced to the source

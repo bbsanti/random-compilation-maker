@@ -225,6 +225,11 @@
     S.pool = [];
   }
 
+  // Above this, skip the in-page preview rather than hold a second copy of the
+  // finished file just to show it. (The size thresholds that decide whether a
+  // render is attempted at all live in core.js, so they can be unit-tested.)
+  var PREVIEW_LIMIT = 150 * 1024 * 1024;
+
   // Encoders this build advertises but cannot actually run. Each was found by
   // encoding a short clip in a fresh engine: libx265 never returns, and the
   // other two abort the WebAssembly heap. Treating them as missing turns a
@@ -714,9 +719,15 @@
         log('Cancelled.', 'warnline');
         setStage('Cancelled.');
       } else {
-        log('ERROR: ' + (e && e.message ? e.message : String(e)), 'err');
+        var msg = (e && e.message) ? e.message : String(e);
+        if (/array buffer allocation|allocation failed|out of memory/i.test(msg)) {
+          msg = 'The browser ran out of memory (' + msg + '). The whole compilation is held in RAM, ' +
+            'so shorten the total duration, choose a smaller resolution or a lighter codec, or lower ' +
+            '"Parallel encodes". The desktop version has no such limit.';
+        }
+        log('ERROR: ' + msg, 'err');
         setStage('Failed.');
-        window.alert(e && e.message ? e.message : String(e));
+        window.alert(msg);
       }
     } finally {
       killPool();
@@ -854,6 +865,31 @@
       enc.encoder + '\' on ' + poolSize + ' parallel worker(s), audio removed.');
     if (opts.seed) log('Seed "' + opts.seed + '" -- this exact compilation is reproducible in this browser.');
 
+    // -- memory pre-flight -------------------------------------------------- //
+    // Better to say no now than to die on an allocation failure twenty minutes
+    // in. The probed bit rate times the planned duration estimates it well.
+    var estBytes = C.estimateOutputBytes(target.bit_rate, totalLen);
+    var verdict = C.outputSizeVerdict(estBytes);
+    if (estBytes !== null) {
+      log('Estimated output: about ' + C.formatBytes(estBytes) + ' (' +
+        (parseFloat(target.bit_rate) / 1e6).toFixed(0) + ' Mbit/s over ' +
+        C.formatDuration(totalLen) + ').');
+    }
+    if (verdict === 'too-big') {
+      throw new Error(
+        'This would produce about ' + C.formatBytes(estBytes) + ', which will run the browser tab ' +
+        'out of memory -- the whole compilation has to be held in RAM. ' +
+        'At this format, keep the total duration to about ' +
+        C.maxSecondsAtBitRate(target.bit_rate) + ' seconds, or choose a smaller resolution or a ' +
+        'lighter codec when asked which format to render as. ' +
+        'The desktop version (random_compilation_maker.py) has no such limit, because it writes ' +
+        'clips to a temp folder on disk instead.');
+    }
+    if (verdict === 'large') {
+      log('That is large for a browser tab. If it runs out of memory, shorten the total duration ' +
+        'or choose a smaller resolution.', 'warnline');
+    }
+
     // -- pool --------------------------------------------------------------- //
     if (poolSize > 1) {
       setStage('Starting ' + poolSize + ' encoders…');
@@ -945,10 +981,20 @@
         // worker that made it so only one copy is ever in memory.
         var data = await r.eng.ff.readFile(r.name);
         await lead.ff.writeFile(r.name, data);
+        data = null;
         try { await r.eng.ff.deleteFile(r.name); } catch (e) { /* fine */ }
       }
       names.push('/' + r.name);
     }
+
+    // The workers have handed everything over and each is still holding its own
+    // wasm heap. Free them before the concat, which is the heaviest step.
+    if (S.pool.length > 1) {
+      S.pool.slice(1).forEach(killEngine);
+      S.pool = [lead];
+      log('  released ' + (poolSize - 1) + ' encoder(s) to make room for the concatenation.');
+    }
+    try { await lead.ff.unmount('/in'); } catch (e) { /* sources are done with */ }
 
     await lead.ff.writeFile('concat_list.txt', new TextEncoder().encode(C.buildConcatList(names)));
     var finalName = 'out' + ext;
@@ -960,31 +1006,45 @@
     }
     setProgress(0.97);
 
+    // The clips are redundant now, and together they are as big again as the
+    // file about to be read out. Drop them before allocating that.
+    for (var d = 0; d < names.length; d++) {
+      try { await lead.ff.deleteFile(names[d]); } catch (e) { /* fine */ }
+    }
+
     // -- save ---------------------------------------------------------------- //
     setStage('Writing the file…');
     var outData = await lead.ff.readFile(finalName);
-    var blob = new Blob([outData], { type: 'video/' + ext.slice(1) });
-    log('Compilation is ' + C.formatBytes(blob.size) + '.');
-    await saveOutput(blob, outName);
+    log('Compilation is ' + C.formatBytes(outData.length) + '.');
+    // The bytes are out of the engine, so its entire heap can go before we risk
+    // copying them again into a Blob.
+    killPool();
+    await saveOutput(outData, outName, ext);
     setProgress(1);
     setStage('Done.');
   }
 
-  async function saveOutput(blob, name) {
+  async function saveOutput(bytes, name, ext) {
+    var size = bytes.length;
+    var mime = 'video/' + String(ext || '.mp4').slice(1);
     if (S.saveHandle) {
       try {
         var writable = await S.saveHandle.createWritable();
-        await writable.write(blob);
+        // Raw bytes: wrapping them in a Blob first would double the memory on
+        // the one path that does not need it.
+        await writable.write(bytes);
         await writable.close();
-        log('Done! Saved to ' + S.saveHandle.name);
-        showResult(blob, name, S.saveHandle.name);
+        log('Done! Saved to ' + S.saveHandle.name + ' (' + C.formatBytes(size) + ').');
+        showResult(size <= PREVIEW_LIMIT ? new Blob([bytes], { type: mime }) : null,
+          name, S.saveHandle.name, size);
         return;
       } catch (e) {
         log('Could not write to the chosen file (' + e.message + ') -- offering a download instead.', 'warnline');
       }
     }
+    // A download link needs a Blob, so this path does hold a second copy.
     log('Done! Use the download link below to save it.');
-    showResult(blob, name, null);
+    showResult(new Blob([bytes], { type: mime }), name, null, size);
   }
 
   /** Extension list for the save picker, most likely container first. */
@@ -994,17 +1054,27 @@
     return [want].concat(all.filter(function (e) { return e !== want; }));
   }
 
-  function showResult(blob, name, savedAs) {
-    if (S.lastObjectURL) URL.revokeObjectURL(S.lastObjectURL);
-    S.lastObjectURL = URL.createObjectURL(blob);
+  function showResult(blob, name, savedAs, size) {
+    if (S.lastObjectURL) { URL.revokeObjectURL(S.lastObjectURL); S.lastObjectURL = null; }
     var box = $('#result');
     box.hidden = false;
+    var total = (size === undefined || size === null) ? (blob ? blob.size : 0) : size;
     var canPick = !!window.showSaveFilePicker;
+
+    // No blob means the file was too large to keep a second copy of merely to
+    // show a preview. It is already on disk, so say so and stop there.
+    if (!blob) {
+      box.innerHTML = '<strong>Saved to ' + esc(savedAs) + '</strong> (' + C.formatBytes(total) + ')' +
+        '<div class="dim small">Too large to preview here without doubling the memory it uses.</div>';
+      return;
+    }
+
     box.innerHTML =
       (savedAs ? '<strong>Saved to ' + esc(savedAs) + '</strong> — ' : '<strong>Compilation ready</strong> — ') +
-      '<a id="dl" download="' + esc(name) + '">download ' + esc(name) + '</a> (' + C.formatBytes(blob.size) + ')' +
+      '<a id="dl" download="' + esc(name) + '">download ' + esc(name) + '</a> (' + C.formatBytes(total) + ')' +
       (!savedAs && canPick ? ' <button type="button" id="btnSaveAs">Save somewhere else…</button>' : '') +
       '<video controls playsinline></video>';
+    S.lastObjectURL = URL.createObjectURL(blob);
     box.querySelector('#dl').href = S.lastObjectURL;
     box.querySelector('video').src = S.lastObjectURL;
 

@@ -76,6 +76,44 @@
     return keys[0];
   }
 
+  // A browser tab holds the whole compilation in memory -- the clips pile up
+  // inside the engine, the concatenation needs that much again, and the
+  // finished file is copied out to the page. Peak is roughly three times the
+  // output, so there is a ceiling the desktop tool (which uses a temp folder on
+  // disk) does not have. These are the thresholds for warning and refusing.
+  var SOFT_OUTPUT_LIMIT = 300 * 1024 * 1024;
+  var HARD_OUTPUT_LIMIT = 900 * 1024 * 1024;
+
+  /** Rough finished size from the target's bit rate, or null if unknowable. */
+  function estimateOutputBytes(bitRate, seconds) {
+    var bps = parseFloat(bitRate);
+    if (!isFinite(bps) || bps <= 0) return null;
+    if (!(seconds > 0)) return null;
+    return (bps / 8) * seconds;
+  }
+
+  /** 'ok' | 'large' | 'too-big' | 'unknown' for an estimated byte count. */
+  function outputSizeVerdict(bytes) {
+    if (bytes === null || bytes === undefined || !isFinite(bytes)) return 'unknown';
+    if (bytes > HARD_OUTPUT_LIMIT) return 'too-big';
+    if (bytes > SOFT_OUTPUT_LIMIT) return 'large';
+    return 'ok';
+  }
+
+  /**
+   * A duration of this format that comfortably fits in a tab.
+   *
+   * Deliberately measured against the SOFT limit, not the hard one: peak memory
+   * is around three times the output, so a duration sitting just under the
+   * refusal threshold would very likely still fail. Advice should land clear of
+   * the cliff, not on its edge.
+   */
+  function maxSecondsAtBitRate(bitRate) {
+    var bps = parseFloat(bitRate);
+    if (!isFinite(bps) || bps <= 0) return null;
+    return Math.max(1, Math.floor(SOFT_OUTPUT_LIMIT / (bps / 8)));
+  }
+
   /** Swap a file name's extension, keeping the stem. */
   function withExtension(name, ext) {
     var stem = String(name || '').replace(/\.[^.\\/]*$/, '');
@@ -1091,6 +1129,11 @@
     isVideoName: isVideoName,
     guessOutputContainer: guessOutputContainer,
     withExtension: withExtension,
+    SOFT_OUTPUT_LIMIT: SOFT_OUTPUT_LIMIT,
+    HARD_OUTPUT_LIMIT: HARD_OUTPUT_LIMIT,
+    estimateOutputBytes: estimateOutputBytes,
+    outputSizeVerdict: outputSizeVerdict,
+    maxSecondsAtBitRate: maxSecondsAtBitRate,
     parseFraction: parseFraction,
     fpsKey: fpsKey,
     formatFps: formatFps,

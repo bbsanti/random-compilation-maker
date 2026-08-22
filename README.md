@@ -129,9 +129,13 @@ compilation as a correctly named download with a *Save somewhere else…* button
 * **It is slower than the desktop tool.** WebAssembly FFmpeg is single-threaded per instance. *Parallel encodes*
   runs several FFmpeg instances at once, which does help, but each one is a separate Web Worker with its own
   memory — 2–4 is a sensible range.
-* **Memory is the real limit.** Source files are mounted with WORKERFS and read lazily, so a large source is fine.
-  The finished clips, however, live in memory until they are concatenated, so a very long or very high-bitrate
-  compilation can run a tab out of memory where the desktop version would happily use a temp folder on disk.
+* **Memory is the real limit, and it is a hard one.** Source files are mounted with WORKERFS and read lazily,
+  so a large *source* is fine. The finished clips, though, live in memory until they are concatenated, and peak
+  usage is roughly three times the size of the output. A browser tab has no temp folder to fall back on, so the
+  app estimates the output from the target bit rate before it starts: over ~300 MB it warns, and over ~900 MB it
+  refuses and tells you what duration would fit. 90 seconds of ProRes HQ 1080p is about 2 GB, so it is refused —
+  that is a genuine limit of the browser, not a bug. Use a lighter codec, a smaller resolution, a shorter
+  duration, or the desktop version, which streams clips through a temp folder on disk and has no ceiling.
 * **Three codecs cannot be re-encoded in the browser at all.** The WebAssembly build lists `libx265`,
   `libvpx-vp9` and `mjpeg`, but none of them actually work in it: libx265 never returns even on a five-frame
   clip, and the other two abort the WebAssembly heap. The page treats them as missing, so an HEVC, VP9 or
