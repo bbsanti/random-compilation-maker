@@ -114,6 +114,122 @@
     return Math.max(1, Math.floor(SOFT_OUTPUT_LIMIT / (bps / 8)));
   }
 
+  /**
+   * How ProRes bit rate varies with profile, relative to HQ.
+   *
+   * Measured on grain-heavy 1080p25 material and consistent with Apple's
+   * published rates (Proxy 45, LT 102, Standard 147, HQ 220 Mbit/s at
+   * 1080p29.97). The ratios hold across resolutions, so they can be applied to
+   * whatever bit rate the real sources probe at.
+   */
+  var PRORES_RATE_RATIO = {
+    'proxy': 0.21, 'lt': 0.46, 'standard': 0.66, 'hq': 1.0,
+    '4444': 1.5, 'xq': 2.27, '4444 xq': 2.27, '4444xq': 2.27
+  };
+  // Best quality first: the alternatives offered are the ones cheaper than the
+  // source, tried in this order so the least damaging comes top.
+  var PRORES_LADDER = [
+    { key: 'standard', label: 'Standard' },
+    { key: 'lt', label: 'LT' },
+    { key: 'proxy', label: 'Proxy' }
+  ];
+
+  function proresRatio(profile) {
+    var k = String(profile || '').trim().toLowerCase();
+    return PRORES_RATE_RATIO[k] === undefined ? null : PRORES_RATE_RATIO[k];
+  }
+
+  /**
+   * Scale a bit rate for a change of frame size.
+   *
+   * Bit rate falls off more slowly than pixel count -- measured 0.44 of the
+   * pixels gave 0.50 of the bits, and 0.25 gave 0.32, an exponent near 0.83.
+   * A lower exponent is used deliberately so the estimate errs high: guessing
+   * too small is what runs the tab out of memory.
+   */
+  function scaleBitRateForPixels(bitRate, pixelRatio) {
+    var bps = parseFloat(bitRate);
+    if (!isFinite(bps) || bps <= 0 || !(pixelRatio > 0)) return null;
+    return bps * Math.pow(pixelRatio, 0.75);
+  }
+
+  function evenDown(n) {
+    var v = Math.floor(Number(n) / 2) * 2;
+    return v > 0 ? v : 2;
+  }
+
+  /**
+   * Ways to make an over-large render fit, best quality first.
+   *
+   * Each option is plain data -- {id, label, detail, estBytes, apply} -- so the
+   * caller decides what to do with it and this stays testable. `apply` carries
+   * whichever of {profile, width, height, seconds} the option changes.
+   * Returns [] when nothing helps.
+   */
+  function fitOptions(target, seconds, limitBytes) {
+    // Measured against the HARD limit, not the soft one: the point is to offer
+    // everything that will actually complete. Filtering on the soft limit threw
+    // away ProRes Proxy, which is exactly the alternative that works.
+    var limit = limitBytes || HARD_OUTPUT_LIMIT;
+    var bps = parseFloat(target.bit_rate);
+    var out = [];
+    if (!isFinite(bps) || bps <= 0 || !(seconds > 0)) return out;
+
+    // Full-length options come first. The duration is something the user typed
+    // in; the codec profile and frame size were derived from their footage
+    // automatically, so those are the less presumptuous things to change.
+
+    // 1. Same length and frame size, lighter ProRes profile. Best quality first.
+    var here = proresRatio(target.profile);
+    if (String(target.codec || '').toLowerCase() === 'prores' && here) {
+      PRORES_LADDER.forEach(function (step) {
+        var ratio = PRORES_RATE_RATIO[step.key];
+        if (!(ratio < here)) return;
+        var est = (bps * (ratio / here) / 8) * seconds;
+        if (est > limit) return;
+        out.push({
+          id: 'profile-' + step.key,
+          label: 'Render as ProRes ' + step.label,
+          detail: 'full length and frame size, about ' +
+            Math.round((ratio / here) * 100) + '% of the data rate',
+          estBytes: est,
+          apply: { profile: step.label }
+        });
+      });
+    }
+
+    // 2. Same length and profile, smaller frame.
+    [[2, 'half size'], [3, 'a third of the size']].forEach(function (step) {
+      var w = evenDown(target.width / step[0]);
+      var h = evenDown(target.height / step[0]);
+      if (w < 128 || h < 96) return;
+      var scaled = scaleBitRateForPixels(bps, (w * h) / (target.width * target.height));
+      var est = (scaled / 8) * seconds;
+      if (est > limit) return;
+      out.push({
+        id: 'scale-' + step[0],
+        label: 'Render at ' + w + ' x ' + h,
+        detail: 'full length, same codec and profile, ' + step[1],
+        estBytes: est,
+        apply: { width: w, height: h }
+      });
+    });
+
+    // 3. Last resort: keep the format exactly and give up length.
+    var fitSecs = Math.floor(limit / (bps / 8));
+    if (fitSecs >= 1 && fitSecs < seconds) {
+      out.push({
+        id: 'shorten',
+        label: 'Shorten to ' + fitSecs + ' seconds',
+        detail: 'the only option that keeps the codec, profile and frame size exactly',
+        estBytes: (bps / 8) * fitSecs,
+        apply: { seconds: fitSecs }
+      });
+    }
+
+    return out;
+  }
+
   /** Swap a file name's extension, keeping the stem. */
   function withExtension(name, ext) {
     var stem = String(name || '').replace(/\.[^.\\/]*$/, '');
@@ -1134,6 +1250,9 @@
     estimateOutputBytes: estimateOutputBytes,
     outputSizeVerdict: outputSizeVerdict,
     maxSecondsAtBitRate: maxSecondsAtBitRate,
+    proresRatio: proresRatio,
+    scaleBitRateForPixels: scaleBitRateForPixels,
+    fitOptions: fitOptions,
     parseFraction: parseFraction,
     fpsKey: fpsKey,
     formatFps: formatFps,

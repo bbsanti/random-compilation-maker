@@ -124,18 +124,48 @@ compilation as a correctly named download with a *Save somewhere else…* button
 * **Firefox / Safari** — everything except that picker; the compilation arrives as a normal download instead.
 * Folder input uses `webkitdirectory`, and dropping a folder onto the page works in Chromium browsers.
 
+## When it will not fit in a tab
+
+The whole compilation is held in memory while it renders, so there is a size ceiling. Rather than refuse, the
+app works out what *would* fit and asks. For 90 seconds of 1080p ProRes HQ — about 2 GB, well past the limit —
+it offers:
+
+```
+Render as ProRes Proxy    (435 MB)  full length and frame size, about 21% of the data rate
+Render at 960 x 540       (732 MB)  full length, same codec and profile, half size
+Render at 640 x 360       (399 MB)  full length, same codec and profile, a third of the size
+Shorten to 39 seconds     (897 MB)  the only option that keeps the codec, profile and frame size exactly
+```
+
+Full-length options come first, because the duration is something you typed in while the codec profile and frame
+size were derived from your footage automatically — so those are the less presumptuous things to change. Whatever
+you pick, the log states plainly what was changed and why; a lighter profile is called out as **deliberately not
+the source profile**, since it breaks the fidelity guarantee above.
+
+Measured ProRes data rates, grain-heavy 1080p25 material (consistent with Apple's published figures):
+
+| profile | Mbit/s | 90 seconds | relative to HQ |
+|---|---|---|---|
+| Proxy | 40 | 431 MB | 0.21× |
+| LT | 89 | 956 MB | 0.46× |
+| Standard | 128 | 1377 MB | 0.66× |
+| HQ | 193 | 2072 MB | 1.00× |
+
+Your own footage may sit well below these — ProRes is content-adaptive, and flat or graphic material compresses
+far better than grain. The app always estimates from your sources' actual probed bit rate, so the numbers it
+shows are for your files, not this table. Note also that bit rate falls off *sublinearly* with frame size: half
+the width and height is roughly a third of the data, not a quarter.
+
 ## Things worth knowing
 
 * **It is slower than the desktop tool.** WebAssembly FFmpeg is single-threaded per instance. *Parallel encodes*
   runs several FFmpeg instances at once, which does help, but each one is a separate Web Worker with its own
   memory — 2–4 is a sensible range.
-* **Memory is the real limit, and it is a hard one.** Source files are mounted with WORKERFS and read lazily,
-  so a large *source* is fine. The finished clips, though, live in memory until they are concatenated, and peak
-  usage is roughly three times the size of the output. A browser tab has no temp folder to fall back on, so the
-  app estimates the output from the target bit rate before it starts: over ~300 MB it warns, and over ~900 MB it
-  refuses and tells you what duration would fit. 90 seconds of ProRes HQ 1080p is about 2 GB, so it is refused —
-  that is a genuine limit of the browser, not a bug. Use a lighter codec, a smaller resolution, a shorter
-  duration, or the desktop version, which streams clips through a temp folder on disk and has no ceiling.
+* **Memory is the real limit.** Source files are mounted with WORKERFS and read lazily, so a large *source* is
+  fine. The output is the problem: peak usage is about twice the finished file, and a browser tab has no temp
+  folder to fall back on. The app estimates the size from the target bit rate before it starts, warns over
+  ~300 MB, and over ~900 MB offers you smaller alternatives instead of failing (see below). The desktop version
+  has no ceiling at all — it writes clips to a temp folder on disk.
 * **Three codecs cannot be re-encoded in the browser at all.** The WebAssembly build lists `libx265`,
   `libvpx-vp9` and `mjpeg`, but none of them actually work in it: libx265 never returns even on a five-frame
   clip, and the other two abort the WebAssembly heap. The page treats them as missing, so an HEVC, VP9 or

@@ -263,6 +263,63 @@
     '90s of 8 Mbit/s H.264 is fine');
   eq(C.maxSecondsAtBitRate(null), null, 'maxSecondsAtBitRate needs a bit rate');
 
+  // ------------------------------------------ smaller alternatives that do fit
+  // Measured on grain-heavy 1080p25 ProRes: HQ 193, Standard 128, LT 89,
+  // Proxy 40 Mbit/s. 90 seconds of HQ is ~2 GB and cannot be done in a tab, so
+  // the app has to offer something that can.
+  var hq1080 = {
+    codec: 'prores', profile: 'HQ', width: 1920, height: 1080,
+    bit_rate: '193000000', pix_fmt: 'yuv422p10le', ext: '.mov'
+  };
+  var opts90 = C.fitOptions(hq1080, 90, C.HARD_OUTPUT_LIMIT);
+  record(opts90.length > 0, '90s of ProRes HQ 1080p gets alternatives offered',
+    opts90.length + ' options');
+  record(opts90.every(function (o) { return o.estBytes <= C.HARD_OUTPUT_LIMIT; }),
+    'every offered alternative is under the limit',
+    opts90.map(function (o) { return C.formatBytes(o.estBytes); }).join(', '));
+  record(opts90.some(function (o) { return o.apply.profile === 'Proxy'; }),
+    'ProRes Proxy is one of the alternatives',
+    opts90.map(function (o) { return o.label; }).join(' | '));
+  record(opts90.some(function (o) { return o.apply.seconds !== undefined; }),
+    'shortening is offered as well');
+  record(opts90.some(function (o) { return o.apply.width !== undefined; }),
+    'a smaller frame size is offered as well');
+  record(opts90[0].apply.seconds === undefined,
+    'a full-length option is offered first, not a shortened one', opts90[0].label);
+  record(opts90[opts90.length - 1].apply.seconds !== undefined,
+    'shortening is the last resort', opts90[opts90.length - 1].label);
+
+  // Nothing heavier than the source is ever offered.
+  record(!opts90.some(function (o) {
+    return o.apply.profile && C.proresRatio(o.apply.profile) >= C.proresRatio('HQ');
+  }), 'no alternative is heavier than the source profile');
+
+  // Ratios must match what was measured.
+  record(Math.abs(C.proresRatio('Proxy') - 0.21) < 0.01 &&
+    Math.abs(C.proresRatio('LT') - 0.46) < 0.01 &&
+    C.proresRatio('HQ') === 1, 'ProRes rate ratios match the measured values');
+  eq(C.proresRatio('nonsense'), null, 'an unknown profile has no ratio');
+
+  // Bit rate falls off sublinearly with pixels, and the estimate must err high.
+  var half = C.scaleBitRateForPixels('193000000', 0.25);
+  record(half > 193e6 * 0.25, 'quarter-size is estimated above a linear guess',
+    (half / 1e6).toFixed(0) + ' Mbit/s');
+  record(half < 193e6, 'but still below the full-size rate', (half / 1e6).toFixed(0));
+  eq(C.scaleBitRateForPixels(null, 0.25), null, 'scaleBitRateForPixels needs a bit rate');
+
+  // A render that already fits gets no interruption; an H.264 source has no
+  // ProRes ladder to fall back on, only length and size.
+  eq(C.fitOptions({ codec: 'prores', profile: 'HQ', width: 1920, height: 1080,
+    bit_rate: '193000000' }, 5, C.HARD_OUTPUT_LIMIT).length > 0, true,
+    'a short HQ render still lists options when asked directly');
+  var h264opts = C.fitOptions({ codec: 'h264', profile: 'High', width: 1920, height: 1080,
+    bit_rate: '400000000' }, 90, C.HARD_OUTPUT_LIMIT);
+  record(!h264opts.some(function (o) { return o.apply.profile; }),
+    'no ProRes ladder is offered for an H.264 source',
+    h264opts.map(function (o) { return o.label; }).join(' | '));
+  eq(C.fitOptions({ codec: 'prores', profile: 'HQ', width: 1920, height: 1080, bit_rate: null },
+    90, C.HARD_OUTPUT_LIMIT), [], 'no bit rate means no advice');
+
   // ------------------------------------------------------------ clip planning
   var planSources = [
     { path: '/in/a.mp4', duration: 60, vf: null },

@@ -215,6 +215,46 @@
       info('--- app log ---');
       text.split('\n').forEach(function (l) { if (l.trim()) info(l); });
 
+      // -- the too-large path ---------------------------------------------------
+      // Only the size verdict is stubbed, so the dialog, the options it lists,
+      // applying the choice and the render that follows are all the real thing.
+      var realVerdict = W.RCM.outputSizeVerdict;
+      W.RCM.outputSizeVerdict = function () { return 'too-big'; };
+      try {
+        written = null;
+        D.getElementById('clipCount').value = '3';
+        D.getElementById('btnRun').click();
+
+        await waitFor(function () { return D.getElementById('formatDialog').open; },
+          90000, 'the format dialog on the over-large run');
+        D.getElementById('btnIncludeAll').click();
+        D.getElementById('btnDlgOk').click();
+
+        await waitFor(function () { return D.getElementById('fitDialog').open; },
+          120000, 'the too-large dialog');
+        check(true, 'an over-large render offers alternatives instead of just failing');
+        var picks = D.querySelectorAll('#fitOptions input[name="fitPick"]');
+        check(picks.length > 0, 'the dialog lists alternatives that fit', picks.length + ' offered');
+        info('intro: ' + D.getElementById('fitIntro').textContent);
+        info('offered: ' + D.getElementById('fitOptions').textContent.replace(/\s+/g, ' ').trim());
+        check(/would be about/.test(D.getElementById('fitIntro').textContent),
+          'it says how big the requested render would have been');
+
+        D.getElementById('btnFitOk').click();
+        await waitFor(function () { return /Done!|ERROR:/.test(logText()); },
+          300000, 'the reduced render to finish');
+        check(!/ERROR:/.test(logText()), 'the reduced render completed',
+          (/ERROR:[^\n]*/.exec(logText()) || [''])[0]);
+        check(/so it fits in memory/.test(logText()),
+          'the log says what was changed and why',
+          (/[^\n]*so it fits in memory[^\n]*/.exec(logText()) || [''])[0]);
+        check(written !== null && written.length > 1000,
+          'the reduced render still produced a file',
+          written ? (written.length / 1024).toFixed(1) + ' KB' : 'nothing');
+      } finally {
+        W.RCM.outputSizeVerdict = realVerdict;
+      }
+
       // -- cancelling a long render --------------------------------------------
       D.getElementById('clipCount').value = '40';
       D.getElementById('btnRun').click();

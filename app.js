@@ -606,6 +606,49 @@
     });
   }
 
+  /**
+   * Ask which smaller-but-workable render to do instead. Resolves to the chosen
+   * option, or null if the user backed out.
+   */
+  function openFitDialog(target, seconds, estBytes, options) {
+    return new Promise(function (resolve) {
+      var dlg = $('#fitDialog');
+      if (!dlg) { resolve(null); return; }
+
+      $('#fitIntro').textContent =
+        'A ' + C.formatDuration(seconds) + ' compilation of ' + target.width + ' x ' + target.height +
+        ' ' + (target.codec || '') + (target.profile ? ' ' + target.profile : '') +
+        ' would be about ' + C.formatBytes(estBytes) + '. That will run the tab out of memory.';
+
+      $('#fitOptions').innerHTML = options.map(function (o, i) {
+        return '<label><input type="radio" name="fitPick" value="' + i + '"' +
+          (i ? '' : ' checked') + '><span>' + esc(o.label) +
+          ' <span class="dim">(about ' + C.formatBytes(o.estBytes) + ' -- ' + esc(o.detail) +
+          ')</span></span></label>';
+      }).join('');
+
+      function finish(value) {
+        $('#btnFitOk').onclick = null;
+        $('#btnFitCancel').onclick = null;
+        dlg.close();
+        resolve(value);
+      }
+      $('#btnFitOk').onclick = function () {
+        var picked = dlg.querySelector('input[name="fitPick"]:checked');
+        finish(picked ? options[parseInt(picked.value, 10)] : null);
+      };
+      $('#btnFitCancel').onclick = function () { finish(null); };
+      dlg.addEventListener('cancel', function (e) { e.preventDefault(); finish(null); }, { once: true });
+      dlg.showModal();
+    });
+  }
+
+  /** Roughly how many seconds of video this run will produce. */
+  function plannedSeconds(opts) {
+    if (opts.mode === 'duration') return opts.total_duration;
+    return opts.clip_count * ((opts.min_len + opts.max_len) / 2);
+  }
+
   // --------------------------------------------------------------- params -- //
   function gatherParams() {
     if (!S.items.length) throw new Error('Add at least one source video.');
@@ -788,6 +831,70 @@
       (target.profile ? " profile '" + target.profile + "'" : '') +
       ", field order '" + target.field_order + "', container '" + target.ext + "'.");
 
+    // -- memory pre-flight -------------------------------------------------- //
+    // Done here, before the filters and the encoder are worked out, so that
+    // changing the target format still feeds through everything downstream.
+    // Better to offer a smaller render now than to die on an allocation
+    // failure twenty minutes in.
+    var wantSecs = plannedSeconds(opts);
+    var estBytes = C.estimateOutputBytes(target.bit_rate, wantSecs);
+    if (estBytes !== null) {
+      log('Estimated output: about ' + C.formatBytes(estBytes) + ' (' +
+        (parseFloat(target.bit_rate) / 1e6).toFixed(0) + ' Mbit/s over ' +
+        C.formatDuration(wantSecs) + ').');
+    }
+    if (C.outputSizeVerdict(estBytes) === 'too-big') {
+      var choices = C.fitOptions(target, wantSecs, C.HARD_OUTPUT_LIMIT);
+      if (!choices.length) {
+        throw new Error(
+          'This would produce about ' + C.formatBytes(estBytes) + ', which will run the browser tab ' +
+          'out of memory, and nothing smaller would help enough. Use fewer or shorter clips.');
+      }
+      log('That is too large to hold in a browser tab -- asking what to render instead.', 'warnline');
+      setStage('Waiting for your choice…');
+      var pick = await openFitDialog(target, wantSecs, estBytes, choices);
+      if (!pick) { log('Cancelled (too large, no alternative chosen).'); throw cancelled(); }
+
+      if (pick.apply.seconds !== undefined) {
+        if (opts.mode === 'duration') {
+          opts.total_duration = pick.apply.seconds;
+        } else {
+          opts.clip_count = Math.max(1, Math.round(
+            pick.apply.seconds / ((opts.min_len + opts.max_len) / 2)));
+        }
+        log('Shortened to about ' + pick.apply.seconds + ' seconds so it fits in memory.', 'warnline');
+      }
+      if (pick.apply.profile) {
+        var wasProfile = target.profile;
+        var wasRatio = C.proresRatio(wasProfile);
+        var nowRatio = C.proresRatio(pick.apply.profile);
+        log('Rendering as ProRes ' + pick.apply.profile + ' instead of ' + wasProfile +
+          ' so it fits in memory. This is deliberately NOT the source profile.', 'warnline');
+        target.profile = pick.apply.profile;
+        if (wasRatio && nowRatio) {
+          target.bit_rate = String(Math.round(parseFloat(target.bit_rate) * (nowRatio / wasRatio)));
+        }
+      }
+      if (pick.apply.width) {
+        var wasW = target.width, wasH = target.height;
+        log('Rendering at ' + pick.apply.width + 'x' + pick.apply.height + ' instead of ' +
+          wasW + 'x' + wasH + ' so it fits in memory.', 'warnline');
+        var rescaled = C.scaleBitRateForPixels(target.bit_rate,
+          (pick.apply.width * pick.apply.height) / (wasW * wasH));
+        target.width = pick.apply.width;
+        target.height = pick.apply.height;
+        if (rescaled) target.bit_rate = String(Math.round(rescaled));
+      }
+      log('Expected output now about ' + C.formatBytes(pick.estBytes) + '.');
+      if (C.outputSizeVerdict(pick.estBytes) === 'large') {
+        log('That is still large for a browser tab. If it runs out of memory, pick a lighter ' +
+          'option next time.', 'warnline');
+      }
+    } else if (C.outputSizeVerdict(estBytes) === 'large') {
+      log('That is large for a browser tab. If it runs out of memory, shorten the total duration ' +
+        'or choose a smaller resolution.', 'warnline');
+    }
+
     // -- per-source conform filters ---------------------------------------- //
     var conformed = 0;
     kept.forEach(function (s) {
@@ -865,30 +972,6 @@
       enc.encoder + '\' on ' + poolSize + ' parallel worker(s), audio removed.');
     if (opts.seed) log('Seed "' + opts.seed + '" -- this exact compilation is reproducible in this browser.');
 
-    // -- memory pre-flight -------------------------------------------------- //
-    // Better to say no now than to die on an allocation failure twenty minutes
-    // in. The probed bit rate times the planned duration estimates it well.
-    var estBytes = C.estimateOutputBytes(target.bit_rate, totalLen);
-    var verdict = C.outputSizeVerdict(estBytes);
-    if (estBytes !== null) {
-      log('Estimated output: about ' + C.formatBytes(estBytes) + ' (' +
-        (parseFloat(target.bit_rate) / 1e6).toFixed(0) + ' Mbit/s over ' +
-        C.formatDuration(totalLen) + ').');
-    }
-    if (verdict === 'too-big') {
-      throw new Error(
-        'This would produce about ' + C.formatBytes(estBytes) + ', which will run the browser tab ' +
-        'out of memory -- the whole compilation has to be held in RAM. ' +
-        'At this format, keep the total duration to about ' +
-        C.maxSecondsAtBitRate(target.bit_rate) + ' seconds, or choose a smaller resolution or a ' +
-        'lighter codec when asked which format to render as. ' +
-        'The desktop version (random_compilation_maker.py) has no such limit, because it writes ' +
-        'clips to a temp folder on disk instead.');
-    }
-    if (verdict === 'large') {
-      log('That is large for a browser tab. If it runs out of memory, shorten the total duration ' +
-        'or choose a smaller resolution.', 'warnline');
-    }
 
     // -- pool --------------------------------------------------------------- //
     if (poolSize > 1) {

@@ -178,6 +178,23 @@
   </form>
 </dialog>
 
+<!-- Shown when the requested compilation is too large to hold in a tab -->
+<dialog id="fitDialog">
+  <form method="dialog" class="dlg">
+    <h2>Too large for a browser tab</h2>
+    <p class="dim small" id="fitIntro"></p>
+    <fieldset><legend>Render this instead</legend><div id="fitOptions"></div></fieldset>
+    <p class="dim small">
+      Everything is held in memory while it renders, so there is a ceiling here that the desktop
+      version does not have. Each option below has been sized to fit.
+    </p>
+    <div class="row end">
+      <button type="button" id="btnFitCancel" class="ghost">Cancel</button>
+      <button type="button" id="btnFitOk" class="primary">Render with this choice</button>
+    </div>
+  </form>
+</dialog>
+
 <script src="lib/ffmpeg/ffmpeg.js" defer></script>
 <script src="lib/ffmpeg/util.js" defer></script>
 <script src="core.js" defer></script>
