@@ -218,8 +218,23 @@
       // -- the too-large path ---------------------------------------------------
       // Only the size verdict is stubbed, so the dialog, the options it lists,
       // applying the choice and the render that follows are all the real thing.
+      // The two real options need a ProRes source and a big bit rate, neither of
+      // which these tiny H.264 test files have, so the option list is supplied
+      // directly. Generating it is covered thoroughly in test_core.html; what
+      // matters here is the dialog, applying the choice, and the render after.
       var realVerdict = W.RCM.outputSizeVerdict;
+      var realFit = W.RCM.fitOptions;
       W.RCM.outputSizeVerdict = function () { return 'too-big'; };
+      W.RCM.fitOptions = function () {
+        return [
+          { id: 'profile-proxy', label: 'Render as ProRes Proxy',
+            detail: 'full length and frame size', estBytes: 1000,
+            apply: { profile: 'Proxy' } },
+          { id: 'shorten', label: 'Shorten to 2 seconds',
+            detail: 'keeps the format exactly', estBytes: 900,
+            apply: { seconds: 2 } }
+        ];
+      };
       try {
         written = null;
         D.getElementById('clipCount').value = '3';
@@ -240,6 +255,9 @@
         check(/would be about/.test(D.getElementById('fitIntro').textContent),
           'it says how big the requested render would have been');
 
+        // Take the second option (a shorter video) -- the Proxy one would need a
+        // ProRes target to mean anything.
+        D.querySelectorAll('#fitOptions input[name="fitPick"]')[1].checked = true;
         D.getElementById('btnFitOk').click();
         await waitFor(function () { return /Done!|ERROR:/.test(logText()); },
           300000, 'the reduced render to finish');
@@ -248,11 +266,14 @@
         check(/so it fits in memory/.test(logText()),
           'the log says what was changed and why',
           (/[^\n]*so it fits in memory[^\n]*/.exec(logText()) || [''])[0]);
+        check(!/Rendering at \d+x\d+ instead/.test(logText()),
+          'the frame size was left alone');
         check(written !== null && written.length > 1000,
           'the reduced render still produced a file',
           written ? (written.length / 1024).toFixed(1) + ' KB' : 'nothing');
       } finally {
         W.RCM.outputSizeVerdict = realVerdict;
+        W.RCM.fitOptions = realFit;
       }
 
       // -- cancelling a long render --------------------------------------------

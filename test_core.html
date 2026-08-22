@@ -272,27 +272,34 @@
     bit_rate: '193000000', pix_fmt: 'yuv422p10le', ext: '.mov'
   };
   var opts90 = C.fitOptions(hq1080, 90, C.HARD_OUTPUT_LIMIT);
-  record(opts90.length > 0, '90s of ProRes HQ 1080p gets alternatives offered',
-    opts90.length + ' options');
-  record(opts90.every(function (o) { return o.estBytes <= C.HARD_OUTPUT_LIMIT; }),
-    'every offered alternative is under the limit',
-    opts90.map(function (o) { return C.formatBytes(o.estBytes); }).join(', '));
-  record(opts90.some(function (o) { return o.apply.profile === 'Proxy'; }),
-    'ProRes Proxy is one of the alternatives',
+  record(opts90.length === 2, '90s of ProRes HQ 1080p offers exactly two ways out',
     opts90.map(function (o) { return o.label; }).join(' | '));
-  record(opts90.some(function (o) { return o.apply.seconds !== undefined; }),
-    'shortening is offered as well');
-  record(opts90.some(function (o) { return o.apply.width !== undefined; }),
-    'a smaller frame size is offered as well');
-  record(opts90[0].apply.seconds === undefined,
-    'a full-length option is offered first, not a shortened one', opts90[0].label);
-  record(opts90[opts90.length - 1].apply.seconds !== undefined,
-    'shortening is the last resort', opts90[opts90.length - 1].label);
+  eq(opts90[0].apply, { profile: 'Proxy' }, 'ProRes Proxy comes first, keeping the full length');
+  record(opts90[1].apply.seconds !== undefined, 'a shorter video is the other option',
+    opts90[1].label);
+  record(opts90.every(function (o) { return o.estBytes <= C.HARD_OUTPUT_LIMIT; }),
+    'both alternatives are under the limit',
+    opts90.map(function (o) { return C.formatBytes(o.estBytes); }).join(', '));
 
-  // Nothing heavier than the source is ever offered.
+  // Resolution is never touched: handing back a smaller picture than the
+  // sources is not an acceptable substitution.
+  record(!opts90.some(function (o) {
+    return o.apply.width !== undefined || o.apply.height !== undefined;
+  }), 'the frame size is never offered as a way to save space');
+  record(!/\d+ ?x ?\d+/.test(opts90.map(function (o) { return o.label + o.detail; }).join(' ')),
+    'and no option even mentions a frame size',
+    opts90.map(function (o) { return o.label; }).join(' | '));
+
+  // Never anything heavier than the source, and never a pointless no-op.
   record(!opts90.some(function (o) {
     return o.apply.profile && C.proresRatio(o.apply.profile) >= C.proresRatio('HQ');
   }), 'no alternative is heavier than the source profile');
+  var proxySrc = { codec: 'prores', profile: 'Proxy', width: 1920, height: 1080,
+    bit_rate: '40000000' };
+  record(!C.fitOptions(proxySrc, 600, C.HARD_OUTPUT_LIMIT).some(function (o) {
+    return o.apply.profile;
+  }), 'a Proxy source is not offered Proxy again',
+    C.fitOptions(proxySrc, 600, C.HARD_OUTPUT_LIMIT).map(function (o) { return o.label; }).join(' | '));
 
   // Ratios must match what was measured.
   record(Math.abs(C.proresRatio('Proxy') - 0.21) < 0.01 &&
@@ -300,23 +307,19 @@
     C.proresRatio('HQ') === 1, 'ProRes rate ratios match the measured values');
   eq(C.proresRatio('nonsense'), null, 'an unknown profile has no ratio');
 
-  // Bit rate falls off sublinearly with pixels, and the estimate must err high.
-  var half = C.scaleBitRateForPixels('193000000', 0.25);
-  record(half > 193e6 * 0.25, 'quarter-size is estimated above a linear guess',
-    (half / 1e6).toFixed(0) + ' Mbit/s');
-  record(half < 193e6, 'but still below the full-size rate', (half / 1e6).toFixed(0));
-  eq(C.scaleBitRateForPixels(null, 0.25), null, 'scaleBitRateForPixels needs a bit rate');
-
-  // A render that already fits gets no interruption; an H.264 source has no
-  // ProRes ladder to fall back on, only length and size.
-  eq(C.fitOptions({ codec: 'prores', profile: 'HQ', width: 1920, height: 1080,
-    bit_rate: '193000000' }, 5, C.HARD_OUTPUT_LIMIT).length > 0, true,
-    'a short HQ render still lists options when asked directly');
+  // A non-ProRes source has no Proxy to fall back on -- only length.
   var h264opts = C.fitOptions({ codec: 'h264', profile: 'High', width: 1920, height: 1080,
     bit_rate: '400000000' }, 90, C.HARD_OUTPUT_LIMIT);
-  record(!h264opts.some(function (o) { return o.apply.profile; }),
-    'no ProRes ladder is offered for an H.264 source',
+  record(h264opts.length === 1 && h264opts[0].apply.seconds !== undefined,
+    'an H.264 source is only offered a shorter video',
     h264opts.map(function (o) { return o.label; }).join(' | '));
+
+  // Even Proxy cannot rescue an absurd request, and then only length is left.
+  var huge = C.fitOptions(hq1080, 3600, C.HARD_OUTPUT_LIMIT);
+  record(huge.length === 1 && huge[0].apply.seconds !== undefined,
+    'when Proxy would still be too big, only shortening is offered',
+    huge.map(function (o) { return o.label; }).join(' | '));
+
   eq(C.fitOptions({ codec: 'prores', profile: 'HQ', width: 1920, height: 1080, bit_rate: null },
     90, C.HARD_OUTPUT_LIMIT), [], 'no bit rate means no advice');
 

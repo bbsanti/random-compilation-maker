@@ -128,19 +128,20 @@ compilation as a correctly named download with a *Save somewhere else…* button
 
 The whole compilation is held in memory while it renders, so there is a size ceiling. Rather than refuse, the
 app works out what *would* fit and asks. For 90 seconds of 1080p ProRes HQ — about 2 GB, well past the limit —
-it offers:
+it offers exactly two things:
 
 ```
 Render as ProRes Proxy    (435 MB)  full length and frame size, about 21% of the data rate
-Render at 960 x 540       (732 MB)  full length, same codec and profile, half size
-Render at 640 x 360       (399 MB)  full length, same codec and profile, a third of the size
-Shorten to 39 seconds     (897 MB)  the only option that keeps the codec, profile and frame size exactly
+Shorten to 39 seconds     (897 MB)  keeps the codec, profile and frame size exactly as they are
 ```
 
-Full-length options come first, because the duration is something you typed in while the codec profile and frame
-size were derived from your footage automatically — so those are the less presumptuous things to change. Whatever
-you pick, the log states plainly what was changed and why; a lighter profile is called out as **deliberately not
-the source profile**, since it breaks the fidelity guarantee above.
+**The frame size is never changed.** Quietly handing back a smaller picture than the sources is not an
+acceptable substitution, so the only levers are the ProRes profile and the length. Proxy comes first because it
+keeps the duration you asked for. Whichever you pick, the log states plainly what was changed and why, and
+Proxy is called out as **deliberately not the source profile**, since it breaks the fidelity guarantee above.
+
+A non-ProRes source has no Proxy to fall back on, so it is offered only a shorter video. If even Proxy would
+still be too large — a very long request — the same applies.
 
 Measured ProRes data rates, grain-heavy 1080p25 material (consistent with Apple's published figures):
 
@@ -153,8 +154,7 @@ Measured ProRes data rates, grain-heavy 1080p25 material (consistent with Apple'
 
 Your own footage may sit well below these — ProRes is content-adaptive, and flat or graphic material compresses
 far better than grain. The app always estimates from your sources' actual probed bit rate, so the numbers it
-shows are for your files, not this table. Note also that bit rate falls off *sublinearly* with frame size: half
-the width and height is roughly a third of the data, not a quarter.
+shows are for your files, not this table.
 
 ## Things worth knowing
 

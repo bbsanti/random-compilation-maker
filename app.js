@@ -875,16 +875,6 @@
           target.bit_rate = String(Math.round(parseFloat(target.bit_rate) * (nowRatio / wasRatio)));
         }
       }
-      if (pick.apply.width) {
-        var wasW = target.width, wasH = target.height;
-        log('Rendering at ' + pick.apply.width + 'x' + pick.apply.height + ' instead of ' +
-          wasW + 'x' + wasH + ' so it fits in memory.', 'warnline');
-        var rescaled = C.scaleBitRateForPixels(target.bit_rate,
-          (pick.apply.width * pick.apply.height) / (wasW * wasH));
-        target.width = pick.apply.width;
-        target.height = pick.apply.height;
-        if (rescaled) target.bit_rate = String(Math.round(rescaled));
-      }
       log('Expected output now about ' + C.formatBytes(pick.estBytes) + '.');
       if (C.outputSizeVerdict(pick.estBytes) === 'large') {
         log('That is still large for a browser tab. If it runs out of memory, pick a lighter ' +
